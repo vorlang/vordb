@@ -1,0 +1,83 @@
+%% VorDB KvStore — LWW-Register Coordination Agent
+%%
+%% Vor-compiled gen_server managing distributed KV state.
+%% Native map_merge :lww, on :init, atom keys in map_get, Erlang extern calls.
+%% Gossip handled externally by VorDB.Gossip (Elixir dispatcher).
+
+agent KvStore(node_id: atom) do
+
+  state store: map
+
+  extern do
+    %% Storage API
+    VorDB.Storage.put(key: binary, value: map) :: atom
+    VorDB.Storage.get_all() :: map
+    VorDB.Storage.put_all(entries: map) :: atom
+
+    %% Entry construction and lookup
+    VorDB.Entry.new(value: binary, timestamp: integer, node_id: atom) :: map
+    VorDB.Entry.tombstone(timestamp: integer, node_id: atom) :: map
+    VorDB.Entry.lookup(store: map, key: binary) :: map
+
+    %% Erlang BIF (GAP-006 resolved)
+    Erlang.erlang.system_time(unit: atom) :: integer
+  end
+
+  protocol do
+    accepts {:put, key: binary, value: binary}
+    accepts {:get, key: binary}
+    accepts {:delete, key: binary}
+    accepts {:sync, remote_store: map}
+    accepts {:get_store}
+
+    emits {:ok, timestamp: integer}
+    emits {:value, key: binary, val: binary, found: atom}
+    emits {:deleted, key: binary, timestamp: integer}
+    emits {:store, data: map}
+  end
+
+  %% Load persisted state from RocksDB at startup
+  on :init do
+    persisted = VorDB.Storage.get_all()
+    transition store: persisted
+  end
+
+  %% Client write
+  on {:put, key: K, value: V} do
+    ts = Erlang.erlang.system_time(unit: :millisecond)
+    entry = VorDB.Entry.new(value: V, timestamp: ts, node_id: node_id)
+    transition store: map_put(store, K, entry)
+    VorDB.Storage.put(key: K, value: entry)
+    emit {:ok, timestamp: ts}
+  end
+
+  %% Client read — extern does conditional logic, handler just emits result
+  on {:get, key: K} do
+    result = VorDB.Entry.lookup(store: store, key: K)
+    v = map_get(result, :val, :none)
+    f = map_get(result, :found, :false)
+    emit {:value, key: K, val: v, found: f}
+  end
+
+  %% Client delete
+  on {:delete, key: K} do
+    ts = Erlang.erlang.system_time(unit: :millisecond)
+    entry = VorDB.Entry.tombstone(timestamp: ts, node_id: node_id)
+    transition store: map_put(store, K, entry)
+    VorDB.Storage.put(key: K, value: entry)
+    emit {:deleted, key: K, timestamp: ts}
+  end
+
+  %% Receive gossip — merge remote store using LWW strategy
+  %% Receive gossip — merge then persist (GAP-007 fully resolved)
+  on {:sync, remote_store: R} do
+    transition store: map_merge(store, R, :lww)
+    VorDB.Storage.put_all(entries: store)
+  end
+
+  %% Return full store for gossip broadcast
+  on {:get_store} do
+    emit {:store, data: store}
+  end
+
+end

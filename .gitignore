@@ -1,0 +1,21 @@
+directions/
+
+# Build
+/_build/
+/deps/
+
+# Data
+/data/
+
+# Generated
+*.beam
+*.ez
+
+# Crash dumps
+erl_crash.dump
+
+# Test
+/cover/
+
+# Env
+.env
