@@ -124,7 +124,7 @@ mix test
 mix test --include integration
 ```
 
-48 tests including 5 property-based suites verifying CRDT merge correctness (commutativity, associativity, idempotency, monotonic timestamps, key preservation).
+45 tests including 5 property-based suites verifying CRDT merge correctness (commutativity, associativity, idempotency, monotonic timestamps, key preservation).
 
 ## Project Structure
 
