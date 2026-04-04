@@ -45,14 +45,14 @@ defmodule VorDB.PropertiesTest do
     try do
       # Load base store
       if map_size(base_store) > 0 do
-        GenServer.cast(pid, {:sync, %{remote_store: base_store}})
+        GenServer.cast(pid, {:lww_sync, %{remote_lww_store: base_store}})
       end
 
       # Merge incoming
-      GenServer.cast(pid, {:sync, %{remote_store: incoming_store}})
+      GenServer.cast(pid, {:lww_sync, %{remote_lww_store: incoming_store}})
 
       # Read result (synchronizes cast processing)
-      {:store, %{data: result}} = GenServer.call(pid, {:get_store, %{}})
+      {:stores, %{lww: result}} = GenServer.call(pid, {:get_stores, %{}})
       result
     after
       GenServer.stop(pid, :normal, 5_000)

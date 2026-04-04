@@ -53,7 +53,7 @@ defmodule VorDB.KvStoreTest do
       "x" => %{value: "remote", timestamp: :erlang.system_time(:millisecond) + 1000, node_id: :remote_node}
     }
 
-    GenServer.cast(pid, {:sync, %{remote_store: remote_store}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: remote_store}})
     # Call to synchronize — ensures cast is processed
     result = GenServer.call(pid, {:get, %{key: "x"}})
     assert {:value, %{key: "x", val: "remote", found: :true}} = result
@@ -64,9 +64,9 @@ defmodule VorDB.KvStoreTest do
       "x" => %{value: "old", timestamp: 1, node_id: :remote_node}
     }
 
-    GenServer.cast(pid, {:sync, %{remote_store: remote_store}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: remote_store}})
     # Ensure sync processed
-    GenServer.call(pid, {:get_store, %{}})
+    GenServer.call(pid, {:get_stores, %{}})
 
     GenServer.call(pid, {:put, %{key: "x", value: "new"}})
     result = GenServer.call(pid, {:get, %{key: "x"}})
@@ -80,8 +80,8 @@ defmodule VorDB.KvStoreTest do
     store_z = %{"x" => %{value: "from_z", timestamp: ts, node_id: :node_z}}
 
     # Sync both — :node_z should win (lexicographically greater)
-    GenServer.cast(pid, {:sync, %{remote_store: store_a}})
-    GenServer.cast(pid, {:sync, %{remote_store: store_z}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: store_a}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: store_z}})
 
     result = GenServer.call(pid, {:get, %{key: "x"}})
     assert {:value, %{key: "x", val: "from_z", found: :true}} = result
@@ -94,7 +94,7 @@ defmodule VorDB.KvStoreTest do
       "y" => %{value: "remote", timestamp: :erlang.system_time(:millisecond), node_id: :remote_node}
     }
 
-    GenServer.cast(pid, {:sync, %{remote_store: remote_store}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: remote_store}})
 
     result_x = GenServer.call(pid, {:get, %{key: "x"}})
     result_y = GenServer.call(pid, {:get, %{key: "y"}})
@@ -107,9 +107,9 @@ defmodule VorDB.KvStoreTest do
       "y" => %{value: "remote", timestamp: 5000, node_id: :remote_node}
     }
 
-    GenServer.cast(pid, {:sync, %{remote_store: remote_store}})
+    GenServer.cast(pid, {:lww_sync, %{remote_lww_store: remote_store}})
     # Synchronize — get_store forces the cast (and its put_all) to complete
-    {:store, %{data: _}} = GenServer.call(pid, {:get_store, %{}})
+    {:stores, %{lww: _}} = GenServer.call(pid, {:get_stores, %{}})
 
     # Verify persistence by stopping the agent and starting a new one
     # that loads from Storage via on :init
@@ -125,7 +125,7 @@ defmodule VorDB.KvStoreTest do
   test "state loads from storage on init (on :init handler)", %{dir: _dir} do
     # Write entries directly to storage
     entry = %{value: "persisted", timestamp: 9999, node_id: :old_node}
-    VorDB.Storage.put("preloaded", entry)
+    VorDB.Storage.put_lww("preloaded", entry)
 
     # Start a new agent — should load via on :init
     {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :new_node], [])

@@ -43,6 +43,76 @@ defmodule VorDB.HTTP.Router do
     send_json(conn, 200, %{deleted: true, key: key, timestamp: timestamp})
   end
 
+  # POST /set/:key/add — add element to set
+  post "/set/:key/add" do
+    element = conn.body_params["element"]
+
+    case element do
+      nil ->
+        send_json(conn, 400, %{error: "missing 'element' in request body"})
+
+      _ ->
+        {:set_ok, %{}} = GenServer.call(Vor.Agent.KvStore, {:set_add, %{key: key, element: element}})
+        send_json(conn, 200, %{ok: true, key: key})
+    end
+  end
+
+  # POST /set/:key/remove — remove element from set
+  post "/set/:key/remove" do
+    element = conn.body_params["element"]
+
+    case element do
+      nil ->
+        send_json(conn, 400, %{error: "missing 'element' in request body"})
+
+      _ ->
+        {:set_ok, %{}} = GenServer.call(Vor.Agent.KvStore, {:set_remove, %{key: key, element: element}})
+        send_json(conn, 200, %{ok: true, key: key})
+    end
+  end
+
+  # GET /set/:key — get set members
+  get "/set/:key" do
+    case GenServer.call(Vor.Agent.KvStore, {:set_members, %{key: key}}) do
+      {:set_members, %{key: ^key, members: members}} ->
+        send_json(conn, 200, %{key: key, members: members})
+
+      {:set_not_found, %{key: ^key}} ->
+        send_json(conn, 404, %{error: "not_found", key: key})
+    end
+  end
+
+  # POST /counter/:key/increment
+  post "/counter/:key/increment" do
+    amount = Map.get(conn.body_params, "amount", 1)
+
+    {:counter_ok, %{}} =
+      GenServer.call(Vor.Agent.KvStore, {:counter_increment, %{key: key, amount: amount}})
+
+    send_json(conn, 200, %{ok: true, key: key})
+  end
+
+  # POST /counter/:key/decrement
+  post "/counter/:key/decrement" do
+    amount = Map.get(conn.body_params, "amount", 1)
+
+    {:counter_ok, %{}} =
+      GenServer.call(Vor.Agent.KvStore, {:counter_decrement, %{key: key, amount: amount}})
+
+    send_json(conn, 200, %{ok: true, key: key})
+  end
+
+  # GET /counter/:key
+  get "/counter/:key" do
+    case GenServer.call(Vor.Agent.KvStore, {:counter_value, %{key: key}}) do
+      {:counter_value, %{key: ^key, val: value}} ->
+        send_json(conn, 200, %{key: key, value: value})
+
+      {:counter_not_found, %{key: ^key}} ->
+        send_json(conn, 404, %{error: "not_found", key: key})
+    end
+  end
+
   # GET /status — node status
   get "/status" do
     send_json(conn, 200, %{

@@ -2,22 +2,56 @@ defmodule VorDB.Storage do
   @moduledoc """
   RocksDB storage layer for VorDB.
 
-  GenServer that owns the RocksDB handle. All reads/writes go through this
-  process to ensure proper handle lifecycle.
+  GenServer that owns the RocksDB handle. Keys are prefix-namespaced by
+  CRDT type: "lww:key" for LWW-Register, "set:key" for OR-Set.
   """
 
   use GenServer
 
   require Logger
 
-  ## Public API
+  ## Public API — type-specific
+
+  def put_lww(key, value) when is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "lww:#{key}", value})
+  end
+
+  def put_set(key, value) when is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "set:#{key}", value})
+  end
+
+  def get_all_lww do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "lww:"})
+  end
+
+  def get_all_sets do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "set:"})
+  end
+
+  def put_all_lww(entries) when is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "lww:", entries})
+  end
+
+  def put_all_sets(entries) when is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "set:", entries})
+  end
+
+  def put_counter(key, value) when is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "counter:#{key}", value})
+  end
+
+  def get_all_counters do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "counter:"})
+  end
+
+  def put_all_counters(entries) when is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "counter:", entries})
+  end
+
+  ## Public API — generic (used by tests)
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  def put(key, value) when is_binary(key) and is_map(value) do
-    GenServer.call(__MODULE__, {:put, key, value})
   end
 
   def get(key) when is_binary(key) do
@@ -30,10 +64,6 @@ defmodule VorDB.Storage do
 
   def get_all do
     GenServer.call(__MODULE__, :get_all)
-  end
-
-  def put_all(entries) when is_map(entries) do
-    GenServer.call(__MODULE__, {:put_all, entries})
   end
 
   ## GenServer callbacks
@@ -91,10 +121,17 @@ defmodule VorDB.Storage do
     {:reply, entries, state}
   end
 
-  def handle_call({:put_all, entries}, _from, %{db: db} = state) do
+  def handle_call({:get_all_by_prefix, prefix}, _from, %{db: db} = state) do
+    {:ok, iter} = :rocksdb.iterator(db, [])
+    entries = iterate_by_prefix(iter, :rocksdb.iterator_move(iter, :first), prefix, %{})
+    :rocksdb.iterator_close(iter)
+    {:reply, entries, state}
+  end
+
+  def handle_call({:put_all_prefixed, prefix, entries}, _from, %{db: db} = state) do
     batch =
       Enum.map(entries, fn {key, value} ->
-        {:put, key, VorDB.Serializer.encode(value)}
+        {:put, "#{prefix}#{key}", VorDB.Serializer.encode(value)}
       end)
 
     case :rocksdb.write(db, batch, []) do
@@ -117,4 +154,22 @@ defmodule VorDB.Storage do
   end
 
   defp iterate_all(_iter, {:error, :invalid_iterator}, acc), do: acc
+
+  defp iterate_by_prefix(iter, {:ok, key, value}, prefix, acc) do
+    prefix_len = byte_size(prefix)
+
+    acc =
+      case key do
+        <<^prefix::binary-size(prefix_len), rest::binary>> ->
+          entry = VorDB.Serializer.decode(value)
+          Map.put(acc, rest, entry)
+
+        _ ->
+          acc
+      end
+
+    iterate_by_prefix(iter, :rocksdb.iterator_move(iter, :next), prefix, acc)
+  end
+
+  defp iterate_by_prefix(_iter, {:error, :invalid_iterator}, _prefix, acc), do: acc
 end

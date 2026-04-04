@@ -9,22 +9,27 @@ defmodule VorDB.Application do
     data_dir = Application.get_env(:vordb, :data_dir, "data/#{node_id}")
     http_port = Application.get_env(:vordb, :http_port, 4001)
     sync_interval = Application.get_env(:vordb, :sync_interval_ms, 1_000)
+    full_sync_interval = Application.get_env(:vordb, :full_sync_interval_ms, 30_000)
+    peers = Application.get_env(:vordb, :peers, [])
 
     children = [
-      # Storage must start first — Vor.Agent.KvStore loads state from it on init
+      # Storage must start first
       {VorDB.Storage, [data_dir: data_dir]},
 
       # Cluster connects to peers
       {VorDB.Cluster, []},
 
-      # Vor-compiled Vor.Agent.KvStore agent — registered as Vor.Agent.KvStore for direct access
+      # DirtyTracker — after Cluster (needs peer list), before agent
+      {VorDB.DirtyTracker, [peers: peers]},
+
+      # Vor-compiled KvStore agent
       %{
         id: :kv_store,
         start: {GenServer, :start_link, [Vor.Agent.KvStore, [node_id: node_id], [name: Vor.Agent.KvStore]]}
       },
 
-      # Gossip broadcasts state to peers on interval
-      {VorDB.Gossip, [sync_interval_ms: sync_interval]},
+      # Gossip — delta + full-state fallback
+      {VorDB.Gossip, [sync_interval_ms: sync_interval, full_sync_interval_ms: full_sync_interval]},
 
       # HTTP API
       {Plug.Cowboy, scheme: :http, plug: VorDB.HTTP.Router, options: [port: http_port]}

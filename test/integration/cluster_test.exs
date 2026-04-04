@@ -50,13 +50,13 @@ defmodule VorDB.Integration.ClusterTest do
   end
 
   defp get_store(node) do
-    {:store, %{data: store}} = GenServer.call(node.pid, {:get_store, %{}})
+    {:stores, %{lww: store}} = GenServer.call(node.pid, {:get_stores, %{}})
     store
   end
 
   defp gossip(from_node, to_node) do
     store = get_store(from_node)
-    GenServer.cast(to_node.pid, {:sync, %{remote_store: store}})
+    GenServer.cast(to_node.pid, {:lww_sync, %{remote_lww_store: store}})
     # Synchronize to ensure cast is processed
     get_store(to_node)
   end
