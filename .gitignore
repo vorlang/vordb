@@ -1,21 +1,17 @@
 directions/
 
-# Build
-/_build/
-/deps/
+# Gleam build
+/build/
 
 # Data
 /data/
 
-# Generated
-*.beam
-*.ez
-
 # Crash dumps
 erl_crash.dump
 
-# Test
-/cover/
-
 # Env
 .env
+
+# Elixir (legacy — removed)
+/_build/
+/deps/

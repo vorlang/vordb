@@ -2,13 +2,15 @@
 
 **A CRDT-based distributed key-value store with verified coordination**
 
-VorDB is a distributed database where every node accepts writes, conflicts resolve automatically using CRDTs, and the coordination layer is formally verified at compile time. Built on [Vor](https://github.com/vorlang/vor), Elixir, RocksDB, and the BEAM.
+VorDB is a distributed database where every node accepts writes, conflicts resolve automatically using CRDTs, and the coordination layer is formally verified at compile time. Built on [Vor](https://github.com/vorlang/vor), Gleam, RocksDB, and the BEAM.
 
 ## Why
 
 Distributed databases have their most dangerous bugs in the coordination layer — merge functions, gossip protocols, state machine transitions. A bug in a CRDT merge function silently corrupts data across the entire cluster. These bugs are hard to find with testing because they only manifest under specific timing and network conditions.
 
 VorDB's coordination layer is written in [Vor](https://github.com/vorlang/vor), a BEAM-native language with compile-time verification. The merge function that resolves conflicts between nodes is verified to be correct before the code ever runs. The safety properties are proven, not tested.
+
+The application layer is written in Gleam for static type safety, with Erlang FFI modules bridging to Vor agents and RocksDB. Three layers of defense: Vor verifies coordination, Gleam's type system catches application bugs at compile time, and property tests verify CRDT merge correctness.
 
 Riak proved that CRDT-based distributed storage on the BEAM works at production scale. Companies like Comcast, bet365, and NHS ran it for real workloads. Riak's failure was business execution, not technology. VorDB picks up where Riak left off — with formal verification that Riak never had.
 
@@ -18,10 +20,10 @@ Riak proved that CRDT-based distributed storage on the BEAM works at production 
 Client (HTTP)
       │
       ▼
-HTTP API (Plug/Cowboy)
+HTTP API (mist — Gleam)
       │
       ▼
-Vnode Router (consistent hashing)
+Vnode Router (consistent hashing — Gleam)
       │
       ├──→ Vnode 0:  KvStore (Vor agent)
       ├──→ Vnode 1:  KvStore (Vor agent)
@@ -31,7 +33,7 @@ Vnode Router (consistent hashing)
             ┌───┴───┐
             ▼       ▼
     CRDT Merge    Extern calls
-    (verified)    to storage
+    (verified)    via Erlang FFI
                     │
                     ▼
               RocksDB (persistence)
@@ -42,10 +44,9 @@ Each node runs N virtual nodes (vnodes), each owning a portion of the keyspace. 
 | Layer | Language | Verified? | Role |
 |---|---|---|---|
 | Coordination | Vor | Compile-time proven | CRDT merge, gossip timing, state recovery |
-| Vnode routing | Elixir | Tested | Consistent hashing, process registry |
-| Gossip | Elixir | Tested | Delta tracking, ACK protocol, peer delivery |
-| HTTP API | Elixir | Tested | REST endpoints, request routing |
-| Storage | Elixir + RocksDB | Battle-tested | Persistence, crash recovery |
+| Application | Gleam | Statically typed | CRDT types, vnode routing, HTTP, gossip dispatch |
+| FFI Bridge | Erlang | Tested | Vor agent ↔ Gleam, RocksDB NIF, process registry |
+| Storage | RocksDB (C++) | Battle-tested | Persistence, crash recovery, compression |
 | Runtime | BEAM/OTP | Battle-tested | Process isolation, distribution, fault tolerance |
 
 ## Quick Start
@@ -53,20 +54,24 @@ Each node runs N virtual nodes (vnodes), each owning a portion of the keyspace. 
 ### Prerequisites
 
 - Erlang/OTP 25+
-- Elixir 1.15+
+- Gleam 1.0+
+- Elixir (for Vor compiler only)
 - [Vor compiler](https://github.com/vorlang/vor) (cloned alongside this repo)
-- RocksDB (installed via the `rocksdb` Hex package NIF)
 
-### Run a single node
+### Build
 
 ```bash
 git clone https://github.com/vorlang/vordb.git
 cd vordb
-mix deps.get
-mix compile
+make build    # Compiles Vor agent, then runs gleam build
+```
 
-# Start node 1
-elixir --sname node1 -S mix run --no-halt
+`make build` first compiles `kv_store.vor` using the Vor compiler (requires the Vor repo at `../vor`), then runs `gleam build` to compile all Gleam and Erlang modules.
+
+### Run a single node
+
+```bash
+erl -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
 ```
 
 The HTTP API is available at `http://localhost:4001`.
@@ -75,22 +80,19 @@ The HTTP API is available at `http://localhost:4001`.
 
 ```bash
 # Terminal 1
-VORDB_NODE_ID=node1 VORDB_HTTP_PORT=4001 elixir --sname node1 -S mix run --no-halt
+erl -sname node1 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
 
 # Terminal 2
-VORDB_NODE_ID=node2 VORDB_HTTP_PORT=4002 VORDB_PEERS=node1@localhost elixir --sname node2 -S mix run --no-halt
+erl -sname node2 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
 
 # Terminal 3
-VORDB_NODE_ID=node3 VORDB_HTTP_PORT=4003 VORDB_PEERS=node1@localhost,node2@localhost elixir --sname node3 -S mix run --no-halt
+erl -sname node3 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
 ```
 
 ### Dynamic cluster membership
 
 ```bash
 # Start a 4th node and join the cluster
-VORDB_NODE_ID=node4 VORDB_HTTP_PORT=4004 elixir --sname node4 -S mix run --no-halt
-
-# Join via admin API
 curl -X POST http://localhost:4004/admin/join \
   -H "Content-Type: application/json" \
   -d '{"seed_node": "node1@localhost"}'
@@ -100,6 +102,21 @@ curl -X POST http://localhost:4004/admin/leave
 
 # View cluster membership
 curl http://localhost:4001/admin/members
+```
+
+### Write and read
+
+```bash
+# Write to node 1
+curl -X PUT http://localhost:4001/kv/greeting \
+  -H "Content-Type: application/json" \
+  -d '{"value": "hello world"}'
+
+# Read from node 2 (after gossip converges)
+curl http://localhost:4002/kv/greeting
+
+# Delete from node 3
+curl -X DELETE http://localhost:4003/kv/greeting
 ```
 
 ## API
@@ -132,10 +149,11 @@ curl http://localhost:4001/admin/members
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET /status` | Node status | → `{"node": "...", "peers": [...], "vnodes": [...]}` |
+| `GET /status` | Node status | → `{"status": "running", "num_vnodes": N}` |
 | `POST /admin/join` | Join cluster | Body: `{"seed_node": "..."}` |
 | `POST /admin/leave` | Leave cluster | |
 | `GET /admin/members` | View membership | → `{"members": [...]}` |
+| `POST /admin/full-sync` | Trigger full-state sync | For recovery |
 
 ## CRDT Types
 
@@ -178,43 +196,60 @@ RocksDB provides crash recovery. When a vnode starts, its Vor agent's `on :init`
 ## Tests
 
 ```bash
-# Unit and property tests
-mix test
+# Build and run all tests (compiles Vor agent first)
+make test
 
-# Include integration tests (multi-node)
-mix test --include integration
+# Or separately:
+make vor         # Compile Vor agent
+gleam build      # Compile Gleam + Erlang modules
+gleam test       # Run tests
 ```
 
-146 tests and 15 property-based suites covering CRDT merge correctness (commutativity, associativity, idempotency), vnode routing, delta gossip with ACK tracking, persistence across restarts, and multi-node cluster convergence.
+108 test cases and 15 property-based suites covering CRDT merge correctness (commutativity, associativity, idempotency for all three types), HTTP REST endpoints, vnode routing, delta gossip with ACK tracking, persistence across restarts, and multi-node cluster convergence.
 
 ## Project Structure
 
 ```
 vordb/
-├── src/vor/
-│   └── kv_store.vor              # Vor agent — verified coordination layer
-├── lib/vordb/
-│   ├── application.ex            # OTP supervision tree
-│   ├── vnode_supervisor.ex       # Starts N vnode agents
-│   ├── vnode_router.ex           # Consistent hash routing
-│   ├── storage.ex                # RocksDB wrapper
-│   ├── serializer.ex             # Term serialization
-│   ├── entry.ex                  # LWW entry helpers
-│   ├── or_set.ex                 # OR-Set CRDT logic
-│   ├── counter.ex                # PN-Counter CRDT logic
-│   ├── dirty_tracker.ex          # Per-vnode per-peer delta tracking with ACKs
-│   ├── gossip.ex                 # Delta and full-state sync
-│   ├── membership.ex             # Dynamic cluster membership
-│   ├── cluster.ex                # Peer discovery
-│   └── http/router.ex            # REST + admin API
+├── gleam.toml                        # Gleam project config
+├── Makefile                          # Build: Vor pre-compilation + gleam build
+├── src/
+│   ├── vor/
+│   │   └── kv_store.vor              # Vor agent — verified coordination layer
+│   ├── vordb.gleam                   # Public API (typed)
+│   ├── vordb/
+│   │   ├── types.gleam               # Core type definitions
+│   │   ├── entry.gleam               # LWW entry types and helpers
+│   │   ├── or_set.gleam              # OR-Set CRDT (typed, pure)
+│   │   ├── counter.gleam             # PN-Counter CRDT (typed, pure)
+│   │   ├── serializer.gleam          # Term serialization
+│   │   ├── map_utils.gleam           # Map utilities
+│   │   ├── storage.gleam             # RocksDB typed wrapper
+│   │   ├── vnode_router.gleam        # Consistent hash routing
+│   │   ├── cluster.gleam             # Peer discovery
+│   │   ├── gossip.gleam              # Gossip dispatch
+│   │   └── http_router.gleam         # HTTP API (mist)
+│   ├── vordb_ffi.erl                 # Erlang FFI — Vor agent bridge, RocksDB, storage gen_server
+│   ├── vordb_http_ffi.erl            # HTTP JSON parsing and response formatting
+│   ├── vordb_dirty_tracker.erl       # Per-vnode per-peer delta tracking with ACKs
+│   ├── vordb_membership.erl          # Dynamic cluster membership
+│   ├── vordb_vnode_sup.erl           # Vnode supervisor (starts N agents)
+│   ├── vordb_vnode_starter.erl       # Agent start + registry
+│   ├── vordb_registry.erl            # ETS-based process registry
+│   └── vordb_app.erl                 # OTP application + supervision tree
 └── test/
-    ├── vordb/                    # Unit + property tests
-    └── integration/              # Multi-node cluster tests
+    ├── *_test.gleam                  # Gleam unit tests (entry, counter, or_set, map_utils)
+    ├── dirty_tracker_test.gleam      # DirtyTracker ACK tests
+    ├── storage_test.gleam            # RocksDB round-trip tests
+    ├── kv_store_test.gleam           # Vor agent CRUD + sync tests
+    ├── http_test.gleam               # HTTP endpoint tests (starts mist)
+    ├── cluster_test.gleam            # Multi-instance gossip convergence tests
+    └── property_test.gleam           # CRDT property tests (15 suites)
 ```
 
 ## Status
 
-**Phase 1 — complete.**
+**Phase 1 — complete. Gleam migration — complete.**
 
 - Three CRDT types: LWW-Register (compile-time verified merge), OR-Set, PN-Counter (property-tested merge)
 - Delta-state gossip with ACK-based delivery and per-vnode timers
@@ -222,7 +257,8 @@ vordb/
 - Dynamic cluster membership (join/leave)
 - RocksDB persistence with vnode-aware key prefixing
 - REST API for all CRDT types plus cluster administration
-- 146 tests + 15 property-based suites
+- Application layer in Gleam with static types; Erlang FFI bridge to Vor agents
+- 108 test cases + 15 property-based suites
 
 Roadmap includes consistent hashing ring with partial replication, multi-datacenter gossip, TTL, and anti-entropy.
 
