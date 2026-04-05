@@ -1,9 +1,9 @@
 defmodule VorDB.Cluster do
   @moduledoc """
-  Cluster membership — static topology for Phase 0.
+  Cluster connectivity and peer discovery.
 
-  Connects to configured peers on startup and monitors connections.
-  Peer list is static from config; dynamic membership is Phase 3.
+  Connects to configured peers on startup. For the dynamic peer list,
+  delegates to VorDB.Membership. Static config peers serve as bootstrap.
   """
 
   use GenServer
@@ -15,7 +15,19 @@ defmodule VorDB.Cluster do
   end
 
   def peers do
-    Application.get_env(:vordb, :peers, [])
+    case GenServer.whereis(VorDB.Membership) do
+      nil ->
+        Application.get_env(:vordb, :peers, [])
+
+      _pid ->
+        members = VorDB.Membership.members()
+
+        if length(members) > 1 do
+          members -- [node()]
+        else
+          Application.get_env(:vordb, :peers, [])
+        end
+    end
   end
 
   def connected_peers do

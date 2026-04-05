@@ -6,14 +6,13 @@ defmodule VorDB.GossipDeltaTest do
   setup do
     {_storage_pid, dir} = TestHelpers.start_storage()
 
-    # Start DirtyTracker with test peers
     case GenServer.whereis(VorDB.DirtyTracker) do
       nil -> :ok
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, _dt} = VorDB.DirtyTracker.start_link(peers: [:peer1, :peer2])
-    pid = TestHelpers.start_kv_store(:test_node)
+    {:ok, _dt} = VorDB.DirtyTracker.start_link(peers: [:peer1, :peer2], num_vnodes: 4)
+    pid = TestHelpers.start_kv_store(:test_node, 0)
 
     on_exit(fn ->
       try do
@@ -28,12 +27,12 @@ defmodule VorDB.GossipDeltaTest do
     %{pid: pid}
   end
 
-  test "mutation marks key dirty for all peers", %{pid: pid} do
+  test "mutation marks key dirty for all peers on vnode 0", %{pid: pid} do
     GenServer.call(pid, {:put, %{key: "x", value: "hello"}})
     Process.sleep(10)
 
-    deltas1 = VorDB.DirtyTracker.take_deltas(:peer1)
-    deltas2 = VorDB.DirtyTracker.take_deltas(:peer2)
+    {_seq, deltas1} = VorDB.DirtyTracker.take_deltas(0, :peer1)
+    {_seq, deltas2} = VorDB.DirtyTracker.take_deltas(0, :peer2)
 
     assert "x" in deltas1.lww
     assert "x" in deltas2.lww
@@ -45,7 +44,7 @@ defmodule VorDB.GossipDeltaTest do
     GenServer.call(pid, {:put, %{key: "z", value: "3"}})
     Process.sleep(10)
 
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert Enum.sort(deltas.lww) == ["x", "y", "z"]
   end
 
@@ -53,29 +52,28 @@ defmodule VorDB.GossipDeltaTest do
     GenServer.call(pid, {:put, %{key: "x", value: "hello"}})
     Process.sleep(10)
 
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert "x" in deltas.lww
 
-    deltas2 = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas2} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert deltas2.lww == []
   end
 
-  test "sync handler marks received keys dirty for further propagation", %{pid: pid} do
+  test "sync handler marks received keys dirty for propagation", %{pid: pid} do
     remote_store = %{
       "remote_key" => %{value: "remote", timestamp: 99999, node_id: :remote_node}
     }
 
     GenServer.cast(pid, {:lww_sync, %{remote_lww_store: remote_store}})
-    # Synchronize
     GenServer.call(pid, {:get_stores, %{}})
     Process.sleep(10)
 
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert "remote_key" in deltas.lww
   end
 
   test "no dirty keys means empty deltas" do
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert deltas.lww == []
     assert deltas.set == []
     assert deltas.counter == []
@@ -85,7 +83,7 @@ defmodule VorDB.GossipDeltaTest do
     GenServer.call(pid, {:set_add, %{key: "s1", element: "alice"}})
     Process.sleep(10)
 
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert "s1" in deltas.set
   end
 
@@ -93,7 +91,7 @@ defmodule VorDB.GossipDeltaTest do
     GenServer.call(pid, {:counter_increment, %{key: "c1", amount: 1}})
     Process.sleep(10)
 
-    deltas = VorDB.DirtyTracker.take_deltas(:peer1)
+    {_seq, deltas} = VorDB.DirtyTracker.take_deltas(0, :peer1)
     assert "c1" in deltas.counter
   end
 

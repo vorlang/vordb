@@ -85,7 +85,7 @@ defmodule VorDB.KvStoreCounterTest do
     GenServer.call(pid, {:counter_increment, %{key: "c1", amount: 7}})
 
     GenServer.stop(pid, :normal, 5_000)
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :test_node], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :test_node, vnode_id: 0, sync_interval_ms: 600_000], [])
 
     {:counter_value, %{val: val}} = GenServer.call(pid2, {:counter_value, %{key: "c1"}})
     assert val == 7

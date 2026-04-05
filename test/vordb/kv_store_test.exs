@@ -114,7 +114,7 @@ defmodule VorDB.KvStoreTest do
     # Verify persistence by stopping the agent and starting a new one
     # that loads from Storage via on :init
     GenServer.stop(pid, :normal, 5_000)
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :verify_node], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :verify_node, vnode_id: 0, sync_interval_ms: 600_000], [])
 
     result = GenServer.call(pid2, {:get, %{key: "y"}})
     assert {:value, %{key: "y", val: "remote", found: :true}} = result
@@ -125,10 +125,10 @@ defmodule VorDB.KvStoreTest do
   test "state loads from storage on init (on :init handler)", %{dir: _dir} do
     # Write entries directly to storage
     entry = %{value: "persisted", timestamp: 9999, node_id: :old_node}
-    VorDB.Storage.put_lww("preloaded", entry)
+    VorDB.Storage.put_lww(0, "preloaded", entry)
 
     # Start a new agent — should load via on :init
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :new_node], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :new_node, vnode_id: 0, sync_interval_ms: 600_000], [])
 
     result = GenServer.call(pid2, {:get, %{key: "preloaded"}})
     assert {:value, %{key: "preloaded", val: "persisted", found: :true}} = result

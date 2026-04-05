@@ -6,7 +6,7 @@ defmodule VorDB.Integration.CounterClusterTest do
   alias VorDB.TestHelpers
 
   defp start_node(node_id) do
-    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id], [])
+    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id, vnode_id: 0, sync_interval_ms: 600_000], [])
     %{pid: pid, node_id: node_id}
   end
 
@@ -107,7 +107,7 @@ defmodule VorDB.Integration.CounterClusterTest do
     counter_inc(n1, "hits", 2)
 
     # Restart n2
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node2], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node2, vnode_id: 0, sync_interval_ms: 600_000], [])
     n2_new = %{n2 | pid: pid2}
 
     gossip_counters(n1, n2_new)

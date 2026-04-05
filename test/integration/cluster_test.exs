@@ -28,7 +28,7 @@ defmodule VorDB.Integration.ClusterTest do
     # For simplicity: use the global Storage but with prefixed keys per node.
     # The agent manages its own in-memory store, so key collisions only affect persistence.
 
-    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id], [])
+    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id, vnode_id: 0, sync_interval_ms: 600_000], [])
     %{pid: pid, node_id: node_id, dir: dir}
   end
 
@@ -160,7 +160,7 @@ defmodule VorDB.Integration.ClusterTest do
     GenServer.stop(n1.pid, :normal)
 
     # Start a new agent — should recover state from Storage via on :init
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node1], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node1, vnode_id: 0, sync_interval_ms: 600_000], [])
 
     result = GenServer.call(pid2, {:get, %{key: "x"}})
     assert {:value, %{key: "x", val: "persist_me", found: :true}} = result
@@ -182,7 +182,7 @@ defmodule VorDB.Integration.ClusterTest do
     put_kv(n1, "y", "during_downtime")
 
     # Restart n2 — recovers "x" from RocksDB via on :init
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node2], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :node2, vnode_id: 0, sync_interval_ms: 600_000], [])
     n2_new = %{n2 | pid: pid2}
 
     # Gossip from n1 brings "y"

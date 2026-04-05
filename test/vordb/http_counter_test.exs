@@ -10,15 +10,10 @@ defmodule VorDB.HTTP.CounterTest do
 
   setup do
     {_storage_pid, dir} = TestHelpers.start_storage()
-    _pid = TestHelpers.start_kv_store_registered(:test_node)
+    TestHelpers.start_vnode_stack(:test_node)
 
     on_exit(fn ->
-      try do
-        GenServer.stop(Vor.Agent.KvStore, :normal, 5_000)
-      catch
-        :exit, _ -> :ok
-      end
-
+      TestHelpers.stop_vnode_stack()
       TestHelpers.cleanup_dir(dir)
     end)
 

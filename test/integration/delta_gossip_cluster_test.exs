@@ -11,7 +11,7 @@ defmodule VorDB.Integration.DeltaGossipClusterTest do
   """
 
   defp start_node(node_id) do
-    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id], [])
+    {:ok, pid} = GenServer.start_link(Vor.Agent.KvStore, [node_id: node_id, vnode_id: 0, sync_interval_ms: 600_000], [])
     %{pid: pid, node_id: node_id}
   end
 

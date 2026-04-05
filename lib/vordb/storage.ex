@@ -2,53 +2,53 @@ defmodule VorDB.Storage do
   @moduledoc """
   RocksDB storage layer for VorDB.
 
-  GenServer that owns the RocksDB handle. Keys are prefix-namespaced by
-  CRDT type: "lww:key" for LWW-Register, "set:key" for OR-Set.
+  One RocksDB instance per node. Keys are prefixed by type and vnode index:
+  "lww:05:mykey", "set:12:mykey", "counter:00:mykey".
   """
 
   use GenServer
 
   require Logger
 
-  ## Public API — type-specific
+  ## Public API — vnode-aware, type-specific
 
-  def put_lww(key, value) when is_binary(key) and is_map(value) do
-    GenServer.call(__MODULE__, {:put, "lww:#{key}", value})
+  def put_lww(vnode_id, key, value) when is_integer(vnode_id) and is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "lww:#{pad(vnode_id)}:#{key}", value})
   end
 
-  def put_set(key, value) when is_binary(key) and is_map(value) do
-    GenServer.call(__MODULE__, {:put, "set:#{key}", value})
+  def put_set(vnode_id, key, value) when is_integer(vnode_id) and is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "set:#{pad(vnode_id)}:#{key}", value})
   end
 
-  def get_all_lww do
-    GenServer.call(__MODULE__, {:get_all_by_prefix, "lww:"})
+  def put_counter(vnode_id, key, value) when is_integer(vnode_id) and is_binary(key) and is_map(value) do
+    GenServer.call(__MODULE__, {:put, "counter:#{pad(vnode_id)}:#{key}", value})
   end
 
-  def get_all_sets do
-    GenServer.call(__MODULE__, {:get_all_by_prefix, "set:"})
+  def get_all_lww(vnode_id) when is_integer(vnode_id) do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "lww:#{pad(vnode_id)}:"})
   end
 
-  def put_all_lww(entries) when is_map(entries) do
-    GenServer.call(__MODULE__, {:put_all_prefixed, "lww:", entries})
+  def get_all_sets(vnode_id) when is_integer(vnode_id) do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "set:#{pad(vnode_id)}:"})
   end
 
-  def put_all_sets(entries) when is_map(entries) do
-    GenServer.call(__MODULE__, {:put_all_prefixed, "set:", entries})
+  def get_all_counters(vnode_id) when is_integer(vnode_id) do
+    GenServer.call(__MODULE__, {:get_all_by_prefix, "counter:#{pad(vnode_id)}:"})
   end
 
-  def put_counter(key, value) when is_binary(key) and is_map(value) do
-    GenServer.call(__MODULE__, {:put, "counter:#{key}", value})
+  def put_all_lww(vnode_id, entries) when is_integer(vnode_id) and is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "lww:#{pad(vnode_id)}:", entries})
   end
 
-  def get_all_counters do
-    GenServer.call(__MODULE__, {:get_all_by_prefix, "counter:"})
+  def put_all_sets(vnode_id, entries) when is_integer(vnode_id) and is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "set:#{pad(vnode_id)}:", entries})
   end
 
-  def put_all_counters(entries) when is_map(entries) do
-    GenServer.call(__MODULE__, {:put_all_prefixed, "counter:", entries})
+  def put_all_counters(vnode_id, entries) when is_integer(vnode_id) and is_map(entries) do
+    GenServer.call(__MODULE__, {:put_all_prefixed, "counter:#{pad(vnode_id)}:", entries})
   end
 
-  ## Public API — generic (used by tests)
+  ## Public API — generic (used by tests and migration)
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -172,4 +172,6 @@ defmodule VorDB.Storage do
   end
 
   defp iterate_by_prefix(_iter, {:error, :invalid_iterator}, _prefix, acc), do: acc
+
+  defp pad(vnode_id), do: String.pad_leading(Integer.to_string(vnode_id), 2, "0")
 end

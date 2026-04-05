@@ -1,12 +1,10 @@
-%% VorDB KvStore — Multi-CRDT Coordination Agent
+%% VorDB KvStore — Multi-CRDT Coordination Agent (Vnode-aware)
 %%
-%% Vor-compiled gen_server managing distributed KV state.
-%% LWW-Register: native map_merge :lww for conflict resolution.
-%% OR-Set: extern-based merge (set union on tag maps).
-%% PN-Counter: extern-based merge (max per node per side).
-%% Delta gossip: DirtyTracker tracks changed keys per peer.
+%% Each instance manages one vnode's slice of the keyspace.
+%% LWW-Register: native map_merge :lww. OR-Set + PN-Counter: extern merge.
+%% Delta gossip via DirtyTracker. Vnode routing handled by Elixir layer.
 
-agent KvStore(node_id: atom) do
+agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
 
   state lww_store: map
   state set_store: map
@@ -14,20 +12,20 @@ agent KvStore(node_id: atom) do
   state counter_store: map
 
   extern do
-    %% Storage API — LWW
-    VorDB.Storage.put_lww(key: binary, value: map) :: atom
-    VorDB.Storage.get_all_lww() :: map
-    VorDB.Storage.put_all_lww(entries: map) :: atom
+    %% Storage API — LWW (vnode-aware)
+    VorDB.Storage.put_lww(vnode_id: integer, key: binary, value: map) :: atom
+    VorDB.Storage.get_all_lww(vnode_id: integer) :: map
+    VorDB.Storage.put_all_lww(vnode_id: integer, entries: map) :: atom
 
-    %% Storage API — OR-Set
-    VorDB.Storage.put_set(key: binary, value: map) :: atom
-    VorDB.Storage.get_all_sets() :: map
-    VorDB.Storage.put_all_sets(entries: map) :: atom
+    %% Storage API — OR-Set (vnode-aware)
+    VorDB.Storage.put_set(vnode_id: integer, key: binary, value: map) :: atom
+    VorDB.Storage.get_all_sets(vnode_id: integer) :: map
+    VorDB.Storage.put_all_sets(vnode_id: integer, entries: map) :: atom
 
-    %% Storage API — Counter
-    VorDB.Storage.put_counter(key: binary, value: map) :: atom
-    VorDB.Storage.get_all_counters() :: map
-    VorDB.Storage.put_all_counters(entries: map) :: atom
+    %% Storage API — Counter (vnode-aware)
+    VorDB.Storage.put_counter(vnode_id: integer, key: binary, value: map) :: atom
+    VorDB.Storage.get_all_counters(vnode_id: integer) :: map
+    VorDB.Storage.put_all_counters(vnode_id: integer, entries: map) :: atom
 
     %% LWW entry construction and lookup
     VorDB.Entry.new(value: binary, timestamp: integer, node_id: atom) :: map
@@ -51,12 +49,16 @@ agent KvStore(node_id: atom) do
     VorDB.Counter.value(counter: map) :: integer
     VorDB.Counter.merge_stores(local: map, remote: map) :: map
 
-    %% Delta gossip — dirty tracking
-    VorDB.DirtyTracker.mark_dirty(type: atom, key: binary) :: atom
-    VorDB.DirtyTracker.mark_dirty_keys(type: atom, keys: map) :: atom
+    %% Delta gossip — vnode-aware dirty tracking
+    VorDB.DirtyTracker.mark_dirty(vnode_id: integer, type: atom, key: binary) :: atom
+    VorDB.DirtyTracker.mark_dirty_keys(vnode_id: integer, type: atom, keys: map) :: atom
 
     %% Map utilities
     VorDB.MapUtils.select_keys(source: map, keys: list) :: map
+
+    %% Per-vnode gossip and ACK
+    VorDB.Gossip.send_vnode_deltas(node_id: atom, vnode_id: integer) :: atom
+    VorDB.DirtyTracker.confirm_ack(vnode_id: integer, peer: atom, seq: integer) :: atom
 
     %% Erlang BIF
     Erlang.erlang.system_time(unit: atom) :: integer
@@ -102,6 +104,9 @@ agent KvStore(node_id: atom) do
     emits {:set_entries, entries: map}
     emits {:counter_entries, entries: map}
 
+    %% Delta ACK
+    accepts {:delta_ack, from_node: atom, vnode_id: integer, seq: integer}
+
     %% Multi-store fetch
     accepts {:get_stores}
     emits {:stores, lww: map, sets: map, counters: map}
@@ -110,9 +115,9 @@ agent KvStore(node_id: atom) do
   %% ===== Init =====
 
   on :init do
-    lww = VorDB.Storage.get_all_lww()
-    sets = VorDB.Storage.get_all_sets()
-    counters = VorDB.Storage.get_all_counters()
+    lww = VorDB.Storage.get_all_lww(vnode_id: vnode_id)
+    sets = VorDB.Storage.get_all_sets(vnode_id: vnode_id)
+    counters = VorDB.Storage.get_all_counters(vnode_id: vnode_id)
     transition lww_store: lww
     transition set_store: sets
     transition counter_store: counters
@@ -124,8 +129,8 @@ agent KvStore(node_id: atom) do
     ts = Erlang.erlang.system_time(unit: :millisecond)
     entry = VorDB.Entry.new(value: V, timestamp: ts, node_id: node_id)
     transition lww_store: map_put(lww_store, K, entry)
-    VorDB.Storage.put_lww(key: K, value: entry)
-    VorDB.DirtyTracker.mark_dirty(type: :lww, key: K)
+    VorDB.Storage.put_lww(vnode_id: vnode_id, key: K, value: entry)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :lww, key: K)
     emit {:ok, timestamp: ts}
   end
 
@@ -140,15 +145,15 @@ agent KvStore(node_id: atom) do
     ts = Erlang.erlang.system_time(unit: :millisecond)
     entry = VorDB.Entry.tombstone(timestamp: ts, node_id: node_id)
     transition lww_store: map_put(lww_store, K, entry)
-    VorDB.Storage.put_lww(key: K, value: entry)
-    VorDB.DirtyTracker.mark_dirty(type: :lww, key: K)
+    VorDB.Storage.put_lww(vnode_id: vnode_id, key: K, value: entry)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :lww, key: K)
     emit {:deleted, key: K, timestamp: ts}
   end
 
   on {:lww_sync, remote_lww_store: R} do
     transition lww_store: map_merge(lww_store, R, :lww)
-    VorDB.Storage.put_all_lww(entries: lww_store)
-    VorDB.DirtyTracker.mark_dirty_keys(type: :lww, keys: R)
+    VorDB.Storage.put_all_lww(vnode_id: vnode_id, entries: lww_store)
+    VorDB.DirtyTracker.mark_dirty_keys(vnode_id: vnode_id, type: :lww, keys: R)
   end
 
   %% ===== OR-Set handlers =====
@@ -161,8 +166,8 @@ agent KvStore(node_id: atom) do
     current = VorDB.OrSet.get_or_empty(store: set_store, key: K)
     updated = VorDB.OrSet.add_element(set_state: current, element: E, tag: tag)
     transition set_store: map_put(set_store, K, updated)
-    VorDB.Storage.put_set(key: K, value: updated)
-    VorDB.DirtyTracker.mark_dirty(type: :set, key: K)
+    VorDB.Storage.put_set(vnode_id: vnode_id, key: K, value: updated)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
 
@@ -170,16 +175,16 @@ agent KvStore(node_id: atom) do
     current = VorDB.OrSet.get_or_empty(store: set_store, key: K)
     updated = VorDB.OrSet.remove_element(set_state: current, element: E)
     transition set_store: map_put(set_store, K, updated)
-    VorDB.Storage.put_set(key: K, value: updated)
-    VorDB.DirtyTracker.mark_dirty(type: :set, key: K)
+    VorDB.Storage.put_set(vnode_id: vnode_id, key: K, value: updated)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
 
   on {:set_members, key: K} do
     found = VorDB.OrSet.has_key(store: set_store, key: K)
-    current = VorDB.OrSet.get_or_empty(store: set_store, key: K)
-    members = VorDB.OrSet.read_elements(set_state: current)
     if found == :true do
+      current = VorDB.OrSet.get_or_empty(store: set_store, key: K)
+      members = VorDB.OrSet.read_elements(set_state: current)
       emit {:set_members, key: K, members: members}
     else
       emit {:set_not_found, key: K}
@@ -189,8 +194,8 @@ agent KvStore(node_id: atom) do
   on {:set_sync, remote_set_store: R} do
     merged = VorDB.OrSet.merge_stores(local: set_store, remote: R)
     transition set_store: merged
-    VorDB.Storage.put_all_sets(entries: set_store)
-    VorDB.DirtyTracker.mark_dirty_keys(type: :set, keys: R)
+    VorDB.Storage.put_all_sets(vnode_id: vnode_id, entries: set_store)
+    VorDB.DirtyTracker.mark_dirty_keys(vnode_id: vnode_id, type: :set, keys: R)
   end
 
   %% ===== Counter handlers =====
@@ -199,8 +204,8 @@ agent KvStore(node_id: atom) do
     current = VorDB.Counter.get_or_empty(store: counter_store, key: K)
     updated = VorDB.Counter.increment(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
-    VorDB.Storage.put_counter(key: K, value: updated)
-    VorDB.DirtyTracker.mark_dirty(type: :counter, key: K)
+    VorDB.Storage.put_counter(vnode_id: vnode_id, key: K, value: updated)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
 
@@ -208,16 +213,16 @@ agent KvStore(node_id: atom) do
     current = VorDB.Counter.get_or_empty(store: counter_store, key: K)
     updated = VorDB.Counter.decrement(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
-    VorDB.Storage.put_counter(key: K, value: updated)
-    VorDB.DirtyTracker.mark_dirty(type: :counter, key: K)
+    VorDB.Storage.put_counter(vnode_id: vnode_id, key: K, value: updated)
+    VorDB.DirtyTracker.mark_dirty(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
 
   on {:counter_value, key: K} do
     found = VorDB.Counter.has_key(store: counter_store, key: K)
-    current = VorDB.Counter.get_or_empty(store: counter_store, key: K)
-    val = VorDB.Counter.value(counter: current)
     if found == :true do
+      current = VorDB.Counter.get_or_empty(store: counter_store, key: K)
+      val = VorDB.Counter.value(counter: current)
       emit {:counter_value, key: K, val: val}
     else
       emit {:counter_not_found, key: K}
@@ -227,8 +232,8 @@ agent KvStore(node_id: atom) do
   on {:counter_sync, remote_counter_store: R} do
     merged = VorDB.Counter.merge_stores(local: counter_store, remote: R)
     transition counter_store: merged
-    VorDB.Storage.put_all_counters(entries: counter_store)
-    VorDB.DirtyTracker.mark_dirty_keys(type: :counter, keys: R)
+    VorDB.Storage.put_all_counters(vnode_id: vnode_id, entries: counter_store)
+    VorDB.DirtyTracker.mark_dirty_keys(vnode_id: vnode_id, type: :counter, keys: R)
   end
 
   %% ===== Delta gossip — entry fetch =====
@@ -252,6 +257,18 @@ agent KvStore(node_id: atom) do
 
   on {:get_stores} do
     emit {:stores, lww: lww_store, sets: set_store, counters: counter_store}
+  end
+
+  %% ===== Delta ACK =====
+
+  on {:delta_ack, from_node: N, vnode_id: V, seq: S} do
+    VorDB.DirtyTracker.confirm_ack(vnode_id: V, peer: N, seq: S)
+  end
+
+  %% ===== Per-vnode gossip timer =====
+
+  every sync_interval_ms do
+    VorDB.Gossip.send_vnode_deltas(node_id: node_id, vnode_id: vnode_id)
   end
 
 end

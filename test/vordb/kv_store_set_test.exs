@@ -84,7 +84,7 @@ defmodule VorDB.KvStoreSetTest do
     GenServer.call(pid, {:set_add, %{key: "s1", element: "bob"}})
 
     GenServer.stop(pid, :normal, 5_000)
-    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :test_node], [])
+    {:ok, pid2} = GenServer.start_link(Vor.Agent.KvStore, [node_id: :test_node, vnode_id: 0, sync_interval_ms: 600_000], [])
 
     {:set_members, %{members: members}} = GenServer.call(pid2, {:set_members, %{key: "s1"}})
     assert "alice" in members

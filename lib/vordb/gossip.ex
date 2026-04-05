@@ -1,9 +1,10 @@
 defmodule VorDB.Gossip do
   @moduledoc """
-  Gossip protocol — delta and full-state sync.
+  Gossip protocol — per-vnode delta gossip with ACK, full-state on demand.
 
-  Delta gossip (frequent): sends only changed keys per peer via DirtyTracker.
-  Full-state gossip (infrequent): sends entire state as fallback for missed deltas.
+  Delta gossip: each vnode's Vor `every` block calls send_vnode_deltas/2.
+  Deltas include sequence numbers; peers ACK receipt. Unacked deltas are retried.
+  Full-state sync: available on demand via send_full_sync/0 (no periodic timer).
   """
 
   use GenServer
@@ -14,111 +15,106 @@ defmodule VorDB.Gossip do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
-  def init(opts) do
-    delta_interval = Keyword.get(opts, :sync_interval_ms, 1_000)
-    full_interval = Keyword.get(opts, :full_sync_interval_ms, 30_000)
+  ## Public API — called by Vor agent's every block via extern
 
-    schedule_delta(delta_interval)
-    schedule_full_sync(full_interval)
-
-    {:ok, %{delta_interval: delta_interval, full_interval: full_interval}}
-  end
-
-  @impl true
-  def handle_info(:delta_gossip, %{delta_interval: interval} = state) do
-    send_deltas()
-    schedule_delta(interval)
-    {:noreply, state}
-  end
-
-  def handle_info(:full_sync, %{full_interval: interval} = state) do
-    send_full_sync()
-    schedule_full_sync(interval)
-    {:noreply, state}
-  end
-
-  ## Delta Sync
-
-  defp send_deltas do
+  def send_vnode_deltas(_node_id, vnode_id) do
     peers = Node.list()
 
     for peer <- peers do
-      deltas = VorDB.DirtyTracker.take_deltas(peer)
-      send_type_deltas(peer, :lww, deltas.lww)
-      send_type_deltas(peer, :set, deltas.set)
-      send_type_deltas(peer, :counter, deltas.counter)
+      {seq, deltas} = VorDB.DirtyTracker.take_deltas(vnode_id, peer)
+
+      if seq > 0 do
+        send_type_deltas(peer, vnode_id, :lww, deltas.lww)
+        send_type_deltas(peer, vnode_id, :set, deltas.set)
+        send_type_deltas(peer, vnode_id, :counter, deltas.counter)
+
+        # Request ACK from peer
+        :erpc.cast(peer, fn ->
+          VorDB.VnodeRouter.cast_vnode(vnode_id,
+            {:delta_ack, %{from_node: peer, vnode_id: vnode_id, seq: seq}})
+        end)
+      end
     end
+
+    :ok
   end
 
-  defp send_type_deltas(_peer, _type, []), do: :ok
+  ## Public API — on-demand full sync (for node join, admin, recovery)
 
-  defp send_type_deltas(peer, :lww, keys) do
-    {:lww_entries, %{entries: entries}} =
-      GenServer.call(Vor.Agent.KvStore, {:get_lww_entries, %{keys: keys}})
-
-    if map_size(entries) > 0 do
-      cast_to_peer(peer, {:lww_sync, %{remote_lww_store: entries}})
-    end
-  end
-
-  defp send_type_deltas(peer, :set, keys) do
-    {:set_entries, %{entries: entries}} =
-      GenServer.call(Vor.Agent.KvStore, {:get_set_entries, %{keys: keys}})
-
-    if map_size(entries) > 0 do
-      cast_to_peer(peer, {:set_sync, %{remote_set_store: entries}})
-    end
-  end
-
-  defp send_type_deltas(peer, :counter, keys) do
-    {:counter_entries, %{entries: entries}} =
-      GenServer.call(Vor.Agent.KvStore, {:get_counter_entries, %{keys: keys}})
-
-    if map_size(entries) > 0 do
-      cast_to_peer(peer, {:counter_sync, %{remote_counter_store: entries}})
-    end
-  end
-
-  ## Full-State Sync
-
-  defp send_full_sync do
+  def send_full_sync do
     peers = Node.list()
 
     if peers != [] do
-      {:stores, %{lww: lww, sets: sets, counters: counters}} =
-        GenServer.call(Vor.Agent.KvStore, {:get_stores, %{}})
+      for vnode_index <- VorDB.VnodeRouter.all_vnodes() do
+        case VorDB.VnodeRouter.call_vnode(vnode_index, {:get_stores, %{}}) do
+          {:stores, %{lww: lww, sets: sets, counters: counters}} ->
+            for peer <- peers do
+              if map_size(lww) > 0,
+                do: cast_to_peer_vnode(peer, vnode_index, {:lww_sync, %{remote_lww_store: lww}})
 
-      for peer <- peers do
-        if map_size(lww) > 0 do
-          cast_to_peer(peer, {:lww_sync, %{remote_lww_store: lww}})
-        end
+              if map_size(sets) > 0,
+                do: cast_to_peer_vnode(peer, vnode_index, {:set_sync, %{remote_set_store: sets}})
 
-        if map_size(sets) > 0 do
-          cast_to_peer(peer, {:set_sync, %{remote_set_store: sets}})
-        end
+              if map_size(counters) > 0,
+                do:
+                  cast_to_peer_vnode(
+                    peer,
+                    vnode_index,
+                    {:counter_sync, %{remote_counter_store: counters}}
+                  )
+            end
 
-        if map_size(counters) > 0 do
-          cast_to_peer(peer, {:counter_sync, %{remote_counter_store: counters}})
+          _ ->
+            :ok
         end
       end
 
-      total = map_size(lww) + map_size(sets) + map_size(counters)
-      Logger.debug("Full sync sent to #{length(peers)} peers (#{total} keys)")
+      Logger.info("Full sync sent to #{length(peers)} peers")
     end
   end
 
-  ## Helpers
+  ## GenServer — minimal, no periodic timers
 
-  defp cast_to_peer(peer, message) do
-    :erpc.cast(peer, GenServer, :cast, [Vor.Agent.KvStore, message])
+  @impl true
+  def init(_opts) do
+    {:ok, %{}}
   end
 
-  defp schedule_delta(interval) do
-    Process.send_after(self(), :delta_gossip, interval)
+  ## Delta helpers
+
+  defp send_type_deltas(_peer, _vnode, _type, []), do: :ok
+
+  defp send_type_deltas(peer, vnode_index, :lww, keys) do
+    case VorDB.VnodeRouter.call_vnode(vnode_index, {:get_lww_entries, %{keys: keys}}) do
+      {:lww_entries, %{entries: entries}} when map_size(entries) > 0 ->
+        cast_to_peer_vnode(peer, vnode_index, {:lww_sync, %{remote_lww_store: entries}})
+
+      _ ->
+        :ok
+    end
   end
 
-  defp schedule_full_sync(interval) do
-    Process.send_after(self(), :full_sync, interval)
+  defp send_type_deltas(peer, vnode_index, :set, keys) do
+    case VorDB.VnodeRouter.call_vnode(vnode_index, {:get_set_entries, %{keys: keys}}) do
+      {:set_entries, %{entries: entries}} when map_size(entries) > 0 ->
+        cast_to_peer_vnode(peer, vnode_index, {:set_sync, %{remote_set_store: entries}})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp send_type_deltas(peer, vnode_index, :counter, keys) do
+    case VorDB.VnodeRouter.call_vnode(vnode_index, {:get_counter_entries, %{keys: keys}}) do
+      {:counter_entries, %{entries: entries}} when map_size(entries) > 0 ->
+        cast_to_peer_vnode(peer, vnode_index, {:counter_sync, %{remote_counter_store: entries}})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp cast_to_peer_vnode(peer, vnode_index, message) do
+    :erpc.cast(peer, VorDB.VnodeRouter, :cast_vnode, [vnode_index, message])
   end
 end

@@ -17,7 +17,7 @@ defmodule VorDB.HTTP.Router do
 
       _ ->
         # Vor emit format: {:ok, %{timestamp: ts}}
-        {:ok, %{timestamp: timestamp}} = GenServer.call(Vor.Agent.KvStore, {:put, %{key: key, value: value}})
+        {:ok, %{timestamp: timestamp}} = VorDB.VnodeRouter.call(key,{:put, %{key: key, value: value}})
         send_json(conn, 200, %{ok: true, key: key, timestamp: timestamp})
     end
   end
@@ -25,7 +25,7 @@ defmodule VorDB.HTTP.Router do
   # GET /kv/:key — read a value
   get "/kv/:key" do
     # Vor emit format: {:value, %{key: k, val: v, found: atom}}
-    case GenServer.call(Vor.Agent.KvStore, {:get, %{key: key}}) do
+    case VorDB.VnodeRouter.call(key,{:get, %{key: key}}) do
       {:value, %{key: ^key, val: value, found: :true}} ->
         send_json(conn, 200, %{key: key, value: value})
 
@@ -38,7 +38,7 @@ defmodule VorDB.HTTP.Router do
   delete "/kv/:key" do
     # Vor emit format: {:deleted, %{key: k, timestamp: ts}}
     {:deleted, %{key: ^key, timestamp: timestamp}} =
-      GenServer.call(Vor.Agent.KvStore, {:delete, %{key: key}})
+      VorDB.VnodeRouter.call(key,{:delete, %{key: key}})
 
     send_json(conn, 200, %{deleted: true, key: key, timestamp: timestamp})
   end
@@ -52,7 +52,7 @@ defmodule VorDB.HTTP.Router do
         send_json(conn, 400, %{error: "missing 'element' in request body"})
 
       _ ->
-        {:set_ok, %{}} = GenServer.call(Vor.Agent.KvStore, {:set_add, %{key: key, element: element}})
+        {:set_ok, %{}} = VorDB.VnodeRouter.call(key,{:set_add, %{key: key, element: element}})
         send_json(conn, 200, %{ok: true, key: key})
     end
   end
@@ -66,14 +66,14 @@ defmodule VorDB.HTTP.Router do
         send_json(conn, 400, %{error: "missing 'element' in request body"})
 
       _ ->
-        {:set_ok, %{}} = GenServer.call(Vor.Agent.KvStore, {:set_remove, %{key: key, element: element}})
+        {:set_ok, %{}} = VorDB.VnodeRouter.call(key,{:set_remove, %{key: key, element: element}})
         send_json(conn, 200, %{ok: true, key: key})
     end
   end
 
   # GET /set/:key — get set members
   get "/set/:key" do
-    case GenServer.call(Vor.Agent.KvStore, {:set_members, %{key: key}}) do
+    case VorDB.VnodeRouter.call(key,{:set_members, %{key: key}}) do
       {:set_members, %{key: ^key, members: members}} ->
         send_json(conn, 200, %{key: key, members: members})
 
@@ -87,7 +87,7 @@ defmodule VorDB.HTTP.Router do
     amount = Map.get(conn.body_params, "amount", 1)
 
     {:counter_ok, %{}} =
-      GenServer.call(Vor.Agent.KvStore, {:counter_increment, %{key: key, amount: amount}})
+      VorDB.VnodeRouter.call(key,{:counter_increment, %{key: key, amount: amount}})
 
     send_json(conn, 200, %{ok: true, key: key})
   end
@@ -97,14 +97,14 @@ defmodule VorDB.HTTP.Router do
     amount = Map.get(conn.body_params, "amount", 1)
 
     {:counter_ok, %{}} =
-      GenServer.call(Vor.Agent.KvStore, {:counter_decrement, %{key: key, amount: amount}})
+      VorDB.VnodeRouter.call(key,{:counter_decrement, %{key: key, amount: amount}})
 
     send_json(conn, 200, %{ok: true, key: key})
   end
 
   # GET /counter/:key
   get "/counter/:key" do
-    case GenServer.call(Vor.Agent.KvStore, {:counter_value, %{key: key}}) do
+    case VorDB.VnodeRouter.call(key,{:counter_value, %{key: key}}) do
       {:counter_value, %{key: ^key, val: value}} ->
         send_json(conn, 200, %{key: key, value: value})
 
@@ -115,12 +115,52 @@ defmodule VorDB.HTTP.Router do
 
   # GET /status — node status
   get "/status" do
+    num_vnodes = Application.get_env(:vordb, :num_vnodes, 16)
+
     send_json(conn, 200, %{
       node: to_string(node()),
       node_id: to_string(Application.get_env(:vordb, :node_id)),
       peers: Enum.map(VorDB.Cluster.peers(), &to_string/1),
-      connected: Enum.map(Node.list(), &to_string/1)
+      connected: Enum.map(Node.list(), &to_string/1),
+      num_vnodes: num_vnodes
     })
+  end
+
+  # POST /admin/join — join cluster via seed node
+  post "/admin/join" do
+    seed = conn.body_params["seed_node"]
+
+    case seed do
+      nil ->
+        send_json(conn, 400, %{error: "missing 'seed_node' in request body"})
+
+      _ ->
+        case VorDB.Membership.join(String.to_atom(seed)) do
+          {:ok, members} ->
+            send_json(conn, 200, %{joined: true, members: Enum.map(members, &to_string/1)})
+
+          {:error, reason} ->
+            send_json(conn, 500, %{error: to_string(reason)})
+        end
+    end
+  end
+
+  # POST /admin/leave — leave cluster
+  post "/admin/leave" do
+    VorDB.Membership.leave()
+    send_json(conn, 200, %{leaving: true})
+  end
+
+  # GET /admin/members — view membership
+  get "/admin/members" do
+    members = VorDB.Membership.members()
+    send_json(conn, 200, %{members: Enum.map(members, &to_string/1)})
+  end
+
+  # POST /admin/full-sync — trigger full-state sync to all peers
+  post "/admin/full-sync" do
+    VorDB.Gossip.send_full_sync()
+    send_json(conn, 200, %{ok: true, action: "full_sync_triggered"})
   end
 
   match _ do
