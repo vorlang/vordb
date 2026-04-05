@@ -12,7 +12,7 @@ VorDB's coordination layer is written in [Vor](https://github.com/vorlang/vor), 
 
 The application layer is written in Gleam for static type safety. Vor agents call Gleam CRDT modules directly for pure operations and Erlang modules for stateful services (storage, gossip). Three layers of defense: Vor verifies coordination, Gleam's type system catches application bugs at compile time, and property tests verify CRDT merge correctness.
 
-Riak proved that CRDT-based distributed storage on the BEAM works at production scale. Companies like Comcast, bet365, and NHS ran it for real workloads. Riak's failure was business execution, not technology. VorDB picks up where Riak left off — with formal verification that Riak never had.
+Riak proved that CRDT-based distributed storage on the BEAM works at production scale. Riak's failure was business execution, not technology. VorDB picks up where Riak left off — with formal verification that Riak never had.
 
 ## Architecture
 
