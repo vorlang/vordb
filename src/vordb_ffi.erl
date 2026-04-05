@@ -162,8 +162,13 @@ entry_tombstone(Timestamp, NodeId) ->
 entry_lookup(Store, Key) ->
     case maps:get(Key, Store, not_found) of
         not_found -> #{val => none, found => false};
+        %% Gleam tagged tuple format
+        {lww_entry, V, _T, _N} -> #{val => V, found => true};
+        {tombstone, _T, _N} -> #{val => none, found => false};
+        %% Legacy plain map format
         #{value := '__tombstone__'} -> #{val => none, found => false};
-        #{value := V} -> #{val => V, found => true}
+        #{value := V} -> #{val => V, found => true};
+        _ -> #{val => none, found => false}
     end.
 
 %% ===== OR-Set helpers =====

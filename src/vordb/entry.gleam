@@ -27,6 +27,15 @@ pub fn lookup(
   }
 }
 
+/// Lookup returning a map for Vor agent compatibility.
+/// Returns %{val: value, found: true/false} as a map the Vor agent
+/// can inspect with map_get.
+@external(erlang, "vordb_ffi", "entry_lookup")
+pub fn lookup_map(
+  store: dict.Dict(String, types.LwwEntry),
+  key: String,
+) -> dict.Dict(String, String)
+
 /// Get the tombstone marker string (for Vor extern compatibility).
 pub fn tombstone_value() -> String {
   tombstone_marker

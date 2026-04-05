@@ -10,7 +10,7 @@ Distributed databases have their most dangerous bugs in the coordination layer �
 
 VorDB's coordination layer is written in [Vor](https://github.com/vorlang/vor), a BEAM-native language with compile-time verification. The merge function that resolves conflicts between nodes is verified to be correct before the code ever runs. The safety properties are proven, not tested.
 
-The application layer is written in Gleam for static type safety, with Erlang FFI modules bridging to Vor agents and RocksDB. Three layers of defense: Vor verifies coordination, Gleam's type system catches application bugs at compile time, and property tests verify CRDT merge correctness.
+The application layer is written in Gleam for static type safety. Vor agents call Gleam CRDT modules directly for pure operations and Erlang modules for stateful services (storage, gossip). Three layers of defense: Vor verifies coordination, Gleam's type system catches application bugs at compile time, and property tests verify CRDT merge correctness.
 
 Riak proved that CRDT-based distributed storage on the BEAM works at production scale. Companies like Comcast, bet365, and NHS ran it for real workloads. Riak's failure was business execution, not technology. VorDB picks up where Riak left off — with formal verification that Riak never had.
 
@@ -33,10 +33,11 @@ Vnode Router (consistent hashing — Gleam)
             ┌───┴───┐
             ▼       ▼
     CRDT Merge    Extern calls
-    (verified)    via Erlang FFI
-                    │
-                    ▼
-              RocksDB (persistence)
+    (verified)    ├── Gleam (CRDT ops)
+                  └── Erlang (storage, gossip)
+                        │
+                        ▼
+                  RocksDB (persistence)
 ```
 
 Each node runs N virtual nodes (vnodes), each owning a portion of the keyspace. Every vnode is an independent Vor agent with its own state, its own gossip timer, and its own failure domain. A crashed vnode restarts from RocksDB without affecting other vnodes.
@@ -44,10 +45,12 @@ Each node runs N virtual nodes (vnodes), each owning a portion of the keyspace. 
 | Layer | Language | Verified? | Role |
 |---|---|---|---|
 | Coordination | Vor | Compile-time proven | CRDT merge, gossip timing, state recovery |
-| Application | Gleam | Statically typed | CRDT types, vnode routing, HTTP, gossip dispatch |
-| FFI Bridge | Erlang | Tested | Vor agent ↔ Gleam, RocksDB NIF, process registry |
+| Application | Gleam | Statically typed | CRDT types (called directly by Vor), vnode routing, HTTP, gossip dispatch |
+| Erlang services | Erlang | Tested | RocksDB storage, dirty tracker, membership, vnode supervision |
 | Storage | RocksDB (C++) | Battle-tested | Persistence, crash recovery, compression |
 | Runtime | BEAM/OTP | Battle-tested | Process isolation, distribution, fault tolerance |
+
+Vor calls Gleam modules directly for pure CRDT operations (`extern gleam`) and Erlang modules for stateful services like storage and gossip (`extern` with `Erlang.` prefix).
 
 ## Quick Start
 
@@ -229,7 +232,7 @@ vordb/
 │   │   ├── cluster.gleam             # Peer discovery
 │   │   ├── gossip.gleam              # Gossip dispatch
 │   │   └── http_router.gleam         # HTTP API (mist)
-│   ├── vordb_ffi.erl                 # Erlang FFI — Vor agent bridge, RocksDB, storage gen_server
+│   ├── vordb_ffi.erl                 # Erlang — RocksDB storage gen_server, LWW entry helpers
 │   ├── vordb_http_ffi.erl            # HTTP JSON parsing and response formatting
 │   ├── vordb_dirty_tracker.erl       # Per-vnode per-peer delta tracking with ACKs
 │   ├── vordb_membership.erl          # Dynamic cluster membership
@@ -257,7 +260,7 @@ vordb/
 - Dynamic cluster membership (join/leave)
 - RocksDB persistence with vnode-aware key prefixing
 - REST API for all CRDT types plus cluster administration
-- Application layer in Gleam with static types; Erlang FFI bridge to Vor agents
+- Application layer in Gleam with static types; Vor calls Gleam directly for CRDT ops, Erlang for stateful services
 - 108 test cases + 15 property-based suites
 
 Roadmap includes consistent hashing ring with partial replication, multi-datacenter gossip, TTL, and anti-entropy.

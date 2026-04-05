@@ -1,7 +1,7 @@
-%% VorDB KvStore — Multi-CRDT Coordination Agent (Gleam/Erlang FFI)
+%% VorDB KvStore — Multi-CRDT Coordination Agent
 %%
-%% All extern calls route through vordb_ffi.erl (Erlang FFI bridge).
-%% LWW: native map_merge :lww. OR-Set + PN-Counter: FFI merge.
+%% Pure CRDT functions call Gleam modules directly (extern gleam).
+%% Storage, dirty tracking, gossip call Erlang FFI (gen_server bridge).
 %% Per-vnode gossip via every block.
 
 agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
@@ -11,57 +11,48 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   state set_tag_counter: integer
   state counter_store: map
 
-  extern do
-    %% Storage
-    Erlang.vordb_ffi.storage_put_lww(vnode_id: integer, key: binary, value: map) :: atom
-    Erlang.vordb_ffi.storage_get_all_lww(vnode_id: integer) :: map
-    Erlang.vordb_ffi.storage_put_all_lww(vnode_id: integer, entries: map) :: atom
-    Erlang.vordb_ffi.storage_put_set(vnode_id: integer, key: binary, value: map) :: atom
-    Erlang.vordb_ffi.storage_get_all_sets(vnode_id: integer) :: map
-    Erlang.vordb_ffi.storage_put_all_sets(vnode_id: integer, entries: map) :: atom
-    Erlang.vordb_ffi.storage_put_counter(vnode_id: integer, key: binary, value: map) :: atom
-    Erlang.vordb_ffi.storage_get_all_counters(vnode_id: integer) :: map
-    Erlang.vordb_ffi.storage_put_all_counters(vnode_id: integer, entries: map) :: atom
+  %% Pure Gleam functions — CRDT operations, entry helpers, map utils
+  extern gleam do
+    vordb/or_set.get_or_empty(store: map, key: binary) :: term
+    vordb/or_set.has_key(store: map, key: binary) :: atom
+    vordb/or_set.add_element(state: term, element: binary, tag: term) :: term
+    vordb/or_set.remove_element(state: term, element: binary) :: term
+    vordb/or_set.read_elements(state: term) :: list
+    vordb/or_set.make_tag(node_id: binary, timestamp: integer, counter: integer) :: term
+    vordb/or_set.merge_stores(local: map, remote: map) :: map
 
-    %% Entry helpers
+    vordb/counter.get_or_empty(store: map, key: binary) :: term
+    vordb/counter.has_key(store: map, key: binary) :: atom
+    vordb/counter.increment(counter: term, node_id: binary, amount: integer) :: term
+    vordb/counter.decrement(counter: term, node_id: binary, amount: integer) :: term
+    vordb/counter.value(counter: term) :: integer
+    vordb/counter.merge_stores(local: map, remote: map) :: map
+
+    vordb/map_utils.select_keys(source: map, keys: list) :: map
+  end
+
+  %% Erlang FFI — entry construction (must be maps for LWW merge), storage, dirty, gossip
+  extern do
     Erlang.vordb_ffi.entry_new(value: binary, timestamp: integer, node_id: atom) :: map
     Erlang.vordb_ffi.entry_tombstone(timestamp: integer, node_id: atom) :: map
     Erlang.vordb_ffi.entry_lookup(store: map, key: binary) :: map
-
-    %% OR-Set helpers
-    Erlang.vordb_ffi.orset_get_or_empty(store: map, key: binary) :: map
-    Erlang.vordb_ffi.orset_has_key(store: map, key: binary) :: atom
-    Erlang.vordb_ffi.orset_add_element(set_state: map, element: binary, tag: map) :: map
-    Erlang.vordb_ffi.orset_remove_element(set_state: map, element: binary) :: map
-    Erlang.vordb_ffi.orset_read_elements(set_state: map) :: list
-    Erlang.vordb_ffi.orset_make_tag(node_id: atom, timestamp: integer, counter: integer) :: map
-    Erlang.vordb_ffi.orset_merge_stores(local: map, remote: map) :: map
-
-    %% Counter helpers
-    Erlang.vordb_ffi.counter_get_or_empty(store: map, key: binary) :: map
-    Erlang.vordb_ffi.counter_has_key(store: map, key: binary) :: atom
-    Erlang.vordb_ffi.counter_increment(counter: map, node_id: atom, amount: integer) :: map
-    Erlang.vordb_ffi.counter_decrement(counter: map, node_id: atom, amount: integer) :: map
-    Erlang.vordb_ffi.counter_value(counter: map) :: integer
-    Erlang.vordb_ffi.counter_merge_stores(local: map, remote: map) :: map
-
-    %% Dirty tracker
+    Erlang.vordb_ffi.storage_put_lww(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_ffi.storage_get_all_lww(vnode_id: integer) :: map
+    Erlang.vordb_ffi.storage_put_all_lww(vnode_id: integer, entries: map) :: atom
+    Erlang.vordb_ffi.storage_put_set(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_ffi.storage_get_all_sets(vnode_id: integer) :: map
+    Erlang.vordb_ffi.storage_put_all_sets(vnode_id: integer, entries: map) :: atom
+    Erlang.vordb_ffi.storage_put_counter(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_ffi.storage_get_all_counters(vnode_id: integer) :: map
+    Erlang.vordb_ffi.storage_put_all_counters(vnode_id: integer, entries: map) :: atom
     Erlang.vordb_ffi.dirty_mark(vnode_id: integer, type: atom, key: binary) :: atom
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: integer, type: atom, keys: map) :: atom
     Erlang.vordb_ffi.dirty_confirm_ack(vnode_id: integer, peer: atom, seq: integer) :: atom
-
-    %% Map utils
-    Erlang.vordb_ffi.map_select_keys(source: map, keys: list) :: map
-
-    %% Gossip
     Erlang.vordb_ffi.gossip_send_vnode_deltas(node_id: atom, vnode_id: integer) :: atom
-
-    %% Time
     Erlang.vordb_ffi.system_time_ms() :: integer
   end
 
   protocol do
-    %% LWW-Register
     accepts {:put, key: binary, value: binary}
     accepts {:get, key: binary}
     accepts {:delete, key: binary}
@@ -71,7 +62,6 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:value, key: binary, val: binary, found: atom}
     emits {:deleted, key: binary, timestamp: integer}
 
-    %% OR-Set
     accepts {:set_add, key: binary, element: binary}
     accepts {:set_remove, key: binary, element: binary}
     accepts {:set_members, key: binary}
@@ -81,7 +71,6 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:set_members, key: binary, members: list}
     emits {:set_not_found, key: binary}
 
-    %% Counter
     accepts {:counter_increment, key: binary, amount: integer}
     accepts {:counter_decrement, key: binary, amount: integer}
     accepts {:counter_value, key: binary}
@@ -91,7 +80,6 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:counter_value, key: binary, val: integer}
     emits {:counter_not_found, key: binary}
 
-    %% Delta gossip — entry fetch
     accepts {:get_lww_entries, keys: list}
     accepts {:get_set_entries, keys: list}
     accepts {:get_counter_entries, keys: list}
@@ -100,15 +88,11 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:set_entries, entries: map}
     emits {:counter_entries, entries: map}
 
-    %% Delta ACK
     accepts {:delta_ack, from_node: atom, vnode_id: integer, seq: integer}
 
-    %% Multi-store fetch
     accepts {:get_stores}
     emits {:stores, lww: map, sets: map, counters: map}
   end
-
-  %% ===== Init =====
 
   on :init do
     lww = Erlang.vordb_ffi.storage_get_all_lww(vnode_id: vnode_id)
@@ -118,8 +102,6 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     transition set_store: sets
     transition counter_store: counters
   end
-
-  %% ===== LWW-Register =====
 
   on {:put, key: K, value: V} do
     ts = Erlang.vordb_ffi.system_time_ms()
@@ -152,15 +134,13 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :lww, keys: R)
   end
 
-  %% ===== OR-Set =====
-
   on {:set_add, key: K, element: E} do
     ts = Erlang.vordb_ffi.system_time_ms()
     counter = set_tag_counter + 1
     transition set_tag_counter: counter
-    tag = Erlang.vordb_ffi.orset_make_tag(node_id: node_id, timestamp: ts, counter: counter)
-    current = Erlang.vordb_ffi.orset_get_or_empty(store: set_store, key: K)
-    updated = Erlang.vordb_ffi.orset_add_element(set_state: current, element: E, tag: tag)
+    tag = vordb/or_set.make_tag(node_id: node_id, timestamp: ts, counter: counter)
+    current = vordb/or_set.get_or_empty(store: set_store, key: K)
+    updated = vordb/or_set.add_element(state: current, element: E, tag: tag)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
@@ -168,8 +148,8 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:set_remove, key: K, element: E} do
-    current = Erlang.vordb_ffi.orset_get_or_empty(store: set_store, key: K)
-    updated = Erlang.vordb_ffi.orset_remove_element(set_state: current, element: E)
+    current = vordb/or_set.get_or_empty(store: set_store, key: K)
+    updated = vordb/or_set.remove_element(state: current, element: E)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
@@ -177,10 +157,10 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:set_members, key: K} do
-    found = Erlang.vordb_ffi.orset_has_key(store: set_store, key: K)
+    found = vordb/or_set.has_key(store: set_store, key: K)
     if found == :true do
-      current = Erlang.vordb_ffi.orset_get_or_empty(store: set_store, key: K)
-      members = Erlang.vordb_ffi.orset_read_elements(set_state: current)
+      current = vordb/or_set.get_or_empty(store: set_store, key: K)
+      members = vordb/or_set.read_elements(state: current)
       emit {:set_members, key: K, members: members}
     else
       emit {:set_not_found, key: K}
@@ -188,17 +168,15 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:set_sync, remote_set_store: R} do
-    merged = Erlang.vordb_ffi.orset_merge_stores(local: set_store, remote: R)
+    merged = vordb/or_set.merge_stores(local: set_store, remote: R)
     transition set_store: merged
     Erlang.vordb_ffi.storage_put_all_sets(vnode_id: vnode_id, entries: set_store)
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :set, keys: R)
   end
 
-  %% ===== Counter =====
-
   on {:counter_increment, key: K, amount: A} do
-    current = Erlang.vordb_ffi.counter_get_or_empty(store: counter_store, key: K)
-    updated = Erlang.vordb_ffi.counter_increment(counter: current, node_id: node_id, amount: A)
+    current = vordb/counter.get_or_empty(store: counter_store, key: K)
+    updated = vordb/counter.increment(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
@@ -206,8 +184,8 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:counter_decrement, key: K, amount: A} do
-    current = Erlang.vordb_ffi.counter_get_or_empty(store: counter_store, key: K)
-    updated = Erlang.vordb_ffi.counter_decrement(counter: current, node_id: node_id, amount: A)
+    current = vordb/counter.get_or_empty(store: counter_store, key: K)
+    updated = vordb/counter.decrement(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
@@ -215,10 +193,10 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:counter_value, key: K} do
-    found = Erlang.vordb_ffi.counter_has_key(store: counter_store, key: K)
+    found = vordb/counter.has_key(store: counter_store, key: K)
     if found == :true do
-      current = Erlang.vordb_ffi.counter_get_or_empty(store: counter_store, key: K)
-      val = Erlang.vordb_ffi.counter_value(counter: current)
+      current = vordb/counter.get_or_empty(store: counter_store, key: K)
+      val = vordb/counter.value(counter: current)
       emit {:counter_value, key: K, val: val}
     else
       emit {:counter_not_found, key: K}
@@ -226,26 +204,24 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:counter_sync, remote_counter_store: R} do
-    merged = Erlang.vordb_ffi.counter_merge_stores(local: counter_store, remote: R)
+    merged = vordb/counter.merge_stores(local: counter_store, remote: R)
     transition counter_store: merged
     Erlang.vordb_ffi.storage_put_all_counters(vnode_id: vnode_id, entries: counter_store)
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :counter, keys: R)
   end
 
-  %% ===== Delta gossip =====
-
   on {:get_lww_entries, keys: K} do
-    entries = Erlang.vordb_ffi.map_select_keys(source: lww_store, keys: K)
+    entries = vordb/map_utils.select_keys(source: lww_store, keys: K)
     emit {:lww_entries, entries: entries}
   end
 
   on {:get_set_entries, keys: K} do
-    entries = Erlang.vordb_ffi.map_select_keys(source: set_store, keys: K)
+    entries = vordb/map_utils.select_keys(source: set_store, keys: K)
     emit {:set_entries, entries: entries}
   end
 
   on {:get_counter_entries, keys: K} do
-    entries = Erlang.vordb_ffi.map_select_keys(source: counter_store, keys: K)
+    entries = vordb/map_utils.select_keys(source: counter_store, keys: K)
     emit {:counter_entries, entries: entries}
   end
 
@@ -253,13 +229,9 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.dirty_confirm_ack(vnode_id: V, peer: N, seq: S)
   end
 
-  %% ===== Multi-store fetch =====
-
   on {:get_stores} do
     emit {:stores, lww: lww_store, sets: set_store, counters: counter_store}
   end
-
-  %% ===== Per-vnode gossip timer =====
 
   every sync_interval_ms do
     Erlang.vordb_ffi.gossip_send_vnode_deltas(node_id: node_id, vnode_id: vnode_id)
