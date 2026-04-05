@@ -6,7 +6,8 @@
 
 -define(PORT, 14099).
 -define(BASE, "http://127.0.0.1:" ++ integer_to_list(?PORT)).
--define(NUM_VNODES, 4).
+-define(RING_SIZE, 8).
+-define(NVAL, 3).
 
 run_all() ->
     setup(),
@@ -44,30 +45,37 @@ setup() ->
     Dir = <<"/tmp/vordb_http_test_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     catch vordb_ffi:storage_stop(),
     {ok, _} = vordb_ffi:storage_start(Dir),
+    %% Start ring manager — single node owns all partitions
+    catch gen_server:stop(vordb_ring_manager),
+    {ok, _} = vordb_ring_manager:start_link(?RING_SIZE, ?NVAL, [<<"test_node">>], <<"test_node">>),
     %% Start registry + dirty tracker
     vordb_registry:start(),
     catch gen_server:stop(vordb_dirty_tracker),
-    {ok, _} = vordb_dirty_tracker:start_link([{peers, []}, {num_vnodes, ?NUM_VNODES}]),
-    %% Start vnodes
+    {ok, _} = vordb_dirty_tracker:start_link([{peers, []}, {num_vnodes, ?RING_SIZE}]),
+    %% Start vnodes for all partitions this node owns
+    MyPartitions = vordb_ring_manager:my_partitions(),
     lists:foreach(fun(V) ->
         {ok, Pid} = gen_server:start_link('Elixir.Vor.Agent.KvStore',
             [{node_id, test_node}, {vnode_id, V}, {sync_interval_ms, 600000}], []),
         vordb_registry:register({kv_store, V}, Pid)
-    end, lists:seq(0, ?NUM_VNODES - 1)),
+    end, MyPartitions),
     %% Start mist HTTP server
-    {ok, _} = 'vordb@http_router':start_mist(?PORT, ?NUM_VNODES),
+    {ok, _} = 'vordb@http_router':start_mist(?PORT, ?RING_SIZE),
     timer:sleep(100),
     put(http_dir, Dir),
+    put(http_partitions, MyPartitions),
     ok.
 
 teardown() ->
     %% Stop vnodes
+    MyPartitions = case get(http_partitions) of undefined -> []; P -> P end,
     lists:foreach(fun(V) ->
         case vordb_registry:lookup({kv_store, V}) of
             {ok, Pid} -> catch gen_server:stop(Pid);
             _ -> ok
         end
-    end, lists:seq(0, ?NUM_VNODES - 1)),
+    end, MyPartitions),
+    catch gen_server:stop(vordb_ring_manager),
     catch gen_server:stop(vordb_dirty_tracker),
     catch vordb_ffi:storage_stop(),
     Dir = get(http_dir),

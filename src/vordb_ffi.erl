@@ -30,6 +30,8 @@
     gossip_send_full_sync/0,
     %% Agent call/cast
     call_agent/2, cast_agent/2,
+    %% Ring
+    ring_from_binary/1,
     %% General FFI
     system_time_ms/0, phash2/2,
     node_self/0, node_list/0, node_connect/1, erpc_cast_vnode/3,
@@ -122,7 +124,7 @@ iterate_prefix(_Iter, {error, invalid_iterator}, _Prefix, _PrefixLen, Acc) ->
 %% ===== Storage API (Vor extern targets) =====
 
 pad(VnodeId) ->
-    iolist_to_binary(io_lib:format("~2..0B", [VnodeId])).
+    iolist_to_binary(io_lib:format("~3..0B", [VnodeId])).
 
 make_prefix(Type, VnodeId) ->
     <<Type/binary, ":", (pad(VnodeId))/binary, ":">>.
@@ -279,7 +281,16 @@ map_select_keys(Source, Keys) ->
 %% ===== Gossip =====
 
 gossip_send_vnode_deltas(_NodeId, VnodeId) ->
-    Peers = nodes(),
+    %% Get replica peers for this partition from ring (scoped gossip)
+    Peers = case whereis(vordb_ring_manager) of
+        undefined -> nodes();  %% Fallback if ring not available
+        _ ->
+            Ring = vordb_ring_manager:get_ring(),
+            SelfNode = vordb_ring_manager:self_node(),
+            PrefList = 'vordb@ring':preference_list(Ring, VnodeId),
+            %% Filter to remote peers only (exclude self, convert to node atoms)
+            [binary_to_atom(N) || N <- PrefList, N =/= SelfNode]
+    end,
     lists:foreach(fun(Peer) ->
         {Seq, Deltas} = vordb_dirty_tracker:take_deltas(VnodeId, Peer),
         case Seq > 0 of
@@ -327,6 +338,11 @@ send_type_deltas(Peer, VnodeId, counter, Keys) ->
 %% ===== General FFI =====
 
 system_time_ms() -> erlang:system_time(millisecond).
+
+ring_from_binary(Bin) ->
+    try {ok, erlang:binary_to_term(Bin)}
+    catch _:_ -> {error, nil}
+    end.
 
 phash2(Key, Range) -> erlang:phash2(Key, Range).
 
@@ -380,12 +396,15 @@ make_get_stores_msg() -> {get_stores, #{}}.
 %% ===== Full Sync =====
 
 gossip_send_full_sync() ->
-    Peers = nodes(),
-    NumVnodes = application:get_env(vordb, num_vnodes, 16),
-    case Peers of
-        [] -> ok;
+    case whereis(vordb_ring_manager) of
+        undefined -> ok;
         _ ->
+            Ring = vordb_ring_manager:get_ring(),
+            SelfNode = vordb_ring_manager:self_node(),
+            MyPartitions = vordb_ring_manager:my_partitions(),
             lists:foreach(fun(VnodeIndex) ->
+                PrefList = 'vordb@ring':preference_list(Ring, VnodeIndex),
+                Peers = [binary_to_atom(N) || N <- PrefList, N =/= SelfNode],
                 case registry_lookup_vnode(VnodeIndex) of
                     {ok, Pid} ->
                         {stores, #{lww := Lww, sets := Sets, counters := Counters}} =
@@ -406,5 +425,5 @@ gossip_send_full_sync() ->
                         end, Peers);
                     _ -> ok
                 end
-            end, lists:seq(0, NumVnodes - 1))
+            end, MyPartitions)
     end.

@@ -5,7 +5,9 @@
 -export([start_link/1, stop/0,
          mark_dirty/3, mark_dirty_keys/3,
          take_deltas/2, confirm_ack/3,
-         add_peer/1, remove_peer/1]).
+         add_peer/1, remove_peer/1,
+         init_partition/2, remove_partition/1, update_partition_peers/2,
+         partition_peers/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2]).
@@ -36,6 +38,19 @@ confirm_ack(VnodeIndex, Peer, Seq) ->
 add_peer(Peer) -> gen_server:cast(?MODULE, {add_peer, Peer}).
 remove_peer(Peer) -> gen_server:cast(?MODULE, {remove_peer, Peer}).
 
+%% Partition-scoped peer management (Phase 2)
+init_partition(Partition, Peers) ->
+    gen_server:cast(?MODULE, {init_partition, Partition, Peers}).
+
+remove_partition(Partition) ->
+    gen_server:cast(?MODULE, {remove_partition, Partition}).
+
+update_partition_peers(Partition, NewPeers) ->
+    gen_server:cast(?MODULE, {update_partition_peers, Partition, NewPeers}).
+
+partition_peers(Partition) ->
+    gen_server:call(?MODULE, {partition_peers, Partition}).
+
 %% ===== gen_server callbacks =====
 
 init(Opts) ->
@@ -46,30 +61,40 @@ init(Opts) ->
         {{V, P}, empty_tracker()}
         || V <- lists:seq(0, NumVnodes - 1), P <- Peers
     ]),
-    {ok, #{trackers => Trackers, peers => Peers, num_vnodes => NumVnodes}}.
+    {ok, #{trackers => Trackers, peers => Peers, num_vnodes => NumVnodes,
+            partition_peers => #{}}}.
 
-handle_cast({mark_dirty, VnodeIndex, Type, Key}, #{trackers := T, peers := Peers} = State) ->
+handle_cast({mark_dirty, VnodeIndex, Type, Key}, #{trackers := T, peers := Peers, partition_peers := PP} = State) ->
+    %% Use partition-scoped peers if available, otherwise fall back to all peers
+    TargetPeers = case maps:get(VnodeIndex, PP, undefined) of
+        undefined -> Peers;
+        ScopedPeers -> ScopedPeers
+    end,
     T2 = lists:foldl(fun(Peer, Acc) ->
         CK = {VnodeIndex, Peer},
         case maps:get(CK, Acc, undefined) of
             undefined -> Acc;
             Tracker -> maps:put(CK, update_dirty(Tracker, Type, fun(S) -> sets:add_element(Key, S) end), Acc)
         end
-    end, T, Peers),
+    end, T, TargetPeers),
     {noreply, State#{trackers := T2}};
 
 handle_cast({mark_dirty_keys, _VnodeIndex, _Type, []}, State) ->
     {noreply, State};
 
-handle_cast({mark_dirty_keys, VnodeIndex, Type, Keys}, #{trackers := T, peers := Peers} = State) ->
+handle_cast({mark_dirty_keys, VnodeIndex, Type, Keys}, #{trackers := T, peers := Peers, partition_peers := PP} = State) ->
     KeySet = sets:from_list(Keys),
+    TargetPeers = case maps:get(VnodeIndex, PP, undefined) of
+        undefined -> Peers;
+        ScopedPeers -> ScopedPeers
+    end,
     T2 = lists:foldl(fun(Peer, Acc) ->
         CK = {VnodeIndex, Peer},
         case maps:get(CK, Acc, undefined) of
             undefined -> Acc;
             Tracker -> maps:put(CK, update_dirty(Tracker, Type, fun(S) -> sets:union(S, KeySet) end), Acc)
         end
-    end, T, Peers),
+    end, T, TargetPeers),
     {noreply, State#{trackers := T2}};
 
 handle_cast({confirm_ack, VnodeIndex, Peer, Seq}, #{trackers := T} = State) ->
@@ -88,10 +113,48 @@ handle_cast({add_peer, Peer}, #{trackers := T, peers := Peers, num_vnodes := NV}
     T2 = maps:merge(NewEntries, T),
     {noreply, State#{trackers := T2, peers := NewPeers}};
 
+%% Partition-scoped peer management
+handle_cast({init_partition, Partition, PeersList}, #{trackers := T, partition_peers := PP} = State) ->
+    %% Create tracker entries for each peer
+    T2 = lists:foldl(fun(Peer, Acc) ->
+        CK = {Partition, Peer},
+        case maps:get(CK, Acc, undefined) of
+            undefined -> maps:put(CK, empty_tracker(), Acc);
+            _ -> Acc  %% Already exists
+        end
+    end, T, PeersList),
+    PP2 = maps:put(Partition, PeersList, PP),
+    {noreply, State#{trackers := T2, partition_peers := PP2}};
+
+handle_cast({remove_partition, Partition}, #{trackers := T, partition_peers := PP} = State) ->
+    OldPeers = maps:get(Partition, PP, []),
+    T2 = lists:foldl(fun(Peer, Acc) -> maps:remove({Partition, Peer}, Acc) end, T, OldPeers),
+    PP2 = maps:remove(Partition, PP),
+    {noreply, State#{trackers := T2, partition_peers := PP2}};
+
+handle_cast({update_partition_peers, Partition, NewPeers}, #{trackers := T, partition_peers := PP} = State) ->
+    OldPeers = maps:get(Partition, PP, []),
+    %% Add new peers
+    T2 = lists:foldl(fun(Peer, Acc) ->
+        CK = {Partition, Peer},
+        case maps:get(CK, Acc, undefined) of
+            undefined -> maps:put(CK, empty_tracker(), Acc);
+            _ -> Acc
+        end
+    end, T, NewPeers),
+    %% Remove departed peers
+    Departed = [P || P <- OldPeers, not lists:member(P, NewPeers)],
+    T3 = lists:foldl(fun(Peer, Acc) -> maps:remove({Partition, Peer}, Acc) end, T2, Departed),
+    PP2 = maps:put(Partition, NewPeers, PP),
+    {noreply, State#{trackers := T3, partition_peers := PP2}};
+
 handle_cast({remove_peer, Peer}, #{trackers := T, peers := Peers} = State) ->
     NewPeers = lists:delete(Peer, Peers),
     T2 = maps:filter(fun({_V, P}, _) -> P =/= Peer end, T),
     {noreply, State#{trackers := T2, peers := NewPeers}}.
+
+handle_call({partition_peers, Partition}, _From, #{partition_peers := PP} = State) ->
+    {reply, maps:get(Partition, PP, []), State};
 
 handle_call({take_deltas, VnodeIndex, Peer}, _From, #{trackers := T} = State) ->
     CK = {VnodeIndex, Peer},

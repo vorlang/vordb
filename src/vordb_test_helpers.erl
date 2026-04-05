@@ -1,13 +1,16 @@
 -module(vordb_test_helpers).
 -export([start_storage/0, start_dirty_tracker/0, start_kv_store/2,
-         stop_storage/0,
+         start_ring_manager/0, start_ring_manager/3,
+         stop_storage/0, stop_ring_manager/0,
          cleanup_dir/1, make_entry/3]).
+
+-define(TEST_RING_SIZE, 8).
+-define(TEST_NVAL, 3).
 
 start_storage() ->
     Dir = filename:join(os:getenv("TMPDIR", "/tmp"),
         "vordb_test_" ++ integer_to_list(erlang:unique_integer([positive]))),
     filelib:ensure_dir(filename:join(Dir, "dummy")),
-    %% Stop existing
     case whereis(vordb_storage) of
         undefined -> ok;
         Pid -> gen_server:stop(Pid)
@@ -18,7 +21,24 @@ start_storage() ->
 stop_storage() ->
     case whereis(vordb_storage) of
         undefined -> ok;
-        _ -> vordb_ffi:storage_stop()
+        _ -> catch vordb_ffi:storage_stop()
+    end.
+
+start_ring_manager() ->
+    start_ring_manager(?TEST_RING_SIZE, ?TEST_NVAL, [<<"test_node">>]).
+
+start_ring_manager(RingSize, NVal, Nodes) ->
+    case whereis(vordb_ring_manager) of
+        undefined -> ok;
+        Pid -> gen_server:stop(Pid)
+    end,
+    {ok, _} = vordb_ring_manager:start_link(RingSize, NVal, Nodes, <<"test_node">>),
+    ok.
+
+stop_ring_manager() ->
+    case whereis(vordb_ring_manager) of
+        undefined -> ok;
+        Pid -> catch gen_server:stop(Pid)
     end.
 
 start_dirty_tracker() ->
@@ -26,16 +46,19 @@ start_dirty_tracker() ->
         undefined -> ok;
         Pid -> gen_server:stop(Pid)
     end,
-    {ok, _} = vordb_dirty_tracker:start_link([{peers, []}, {num_vnodes, 4}]),
+    {ok, _} = vordb_dirty_tracker:start_link([{peers, []}, {num_vnodes, ?TEST_RING_SIZE}]),
     ok.
 
 start_kv_store(NodeId, VnodeId) ->
-    %% Ensure dirty tracker running
+    %% Ensure dependencies running
     case whereis(vordb_dirty_tracker) of
         undefined -> start_dirty_tracker();
         _ -> ok
     end,
-    %% Ensure registry exists
+    case whereis(vordb_ring_manager) of
+        undefined -> start_ring_manager();
+        _ -> ok
+    end,
     vordb_registry:start(),
     {ok, Pid} = gen_server:start_link('Elixir.Vor.Agent.KvStore',
         [{node_id, NodeId}, {vnode_id, VnodeId}, {sync_interval_ms, 600000}], []),
