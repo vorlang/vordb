@@ -6,7 +6,6 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
 import mist.{type Connection}
-import vordb/vnode_router
 
 // FFI for message construction
 @external(erlang, "vordb_ffi", "make_put_msg")
@@ -61,6 +60,12 @@ fn format_set_members_response(key: String, agent_resp: Dynamic) -> String
 @external(erlang, "vordb_http_ffi", "format_counter_value_response")
 fn format_counter_value_response(key: String, agent_resp: Dynamic) -> String
 
+@external(erlang, "vordb_coordinator", "write")
+fn coordinator_write(key: String, message: Dynamic) -> Result(Dynamic, Dynamic)
+
+@external(erlang, "vordb_coordinator", "read")
+fn coordinator_read(key: String, message: Dynamic) -> Result(Dynamic, Dynamic)
+
 @external(erlang, "vordb_http_ffi", "is_not_found")
 fn is_not_found(agent_resp: Dynamic) -> Bool
 
@@ -94,9 +99,9 @@ fn handle_kv_put(req: Request(Connection), key: String, nv: Int) -> Response(mis
       let body = parse_json_body(r.body)
       case json_get_string(body, "value") {
         Ok(value) ->
-          case vnode_router.call(key, nv, make_put_msg(key, value)) {
+          case coordinator_write(key, make_put_msg(key, value)) {
             Ok(resp) -> json_response(200, format_kv_put_response(key, resp))
-            Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+            Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
           }
         Error(_) -> json_response(400, "{\"error\":\"missing value\"}")
       }
@@ -106,20 +111,20 @@ fn handle_kv_put(req: Request(Connection), key: String, nv: Int) -> Response(mis
 }
 
 fn handle_kv_get(key: String, nv: Int) -> Response(mist.ResponseData) {
-  case vnode_router.call(key, nv, make_get_msg(key)) {
+  case coordinator_read(key, make_get_msg(key)) {
     Ok(resp) ->
       case is_not_found(resp) {
         True -> json_response(404, "{\"error\":\"not_found\",\"key\":\"" <> key <> "\"}")
         False -> json_response(200, format_kv_get_response(key, resp))
       }
-    Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+    Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
   }
 }
 
 fn handle_kv_delete(key: String, nv: Int) -> Response(mist.ResponseData) {
-  case vnode_router.call(key, nv, make_delete_msg(key)) {
+  case coordinator_write(key, make_delete_msg(key)) {
     Ok(resp) -> json_response(200, format_kv_delete_response(key, resp))
-    Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+    Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
   }
 }
 
@@ -129,9 +134,9 @@ fn handle_set_add(req: Request(Connection), key: String, nv: Int) -> Response(mi
       let body = parse_json_body(r.body)
       case json_get_string(body, "element") {
         Ok(element) ->
-          case vnode_router.call(key, nv, make_set_add_msg(key, element)) {
+          case coordinator_write(key, make_set_add_msg(key, element)) {
             Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
-            Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+            Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
           }
         Error(_) -> json_response(400, "{\"error\":\"missing element\"}")
       }
@@ -146,9 +151,9 @@ fn handle_set_remove(req: Request(Connection), key: String, nv: Int) -> Response
       let body = parse_json_body(r.body)
       case json_get_string(body, "element") {
         Ok(element) ->
-          case vnode_router.call(key, nv, make_set_remove_msg(key, element)) {
+          case coordinator_write(key, make_set_remove_msg(key, element)) {
             Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
-            Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+            Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
           }
         Error(_) -> json_response(400, "{\"error\":\"missing element\"}")
       }
@@ -158,13 +163,13 @@ fn handle_set_remove(req: Request(Connection), key: String, nv: Int) -> Response
 }
 
 fn handle_set_members(key: String, nv: Int) -> Response(mist.ResponseData) {
-  case vnode_router.call(key, nv, make_set_members_msg(key)) {
+  case coordinator_read(key, make_set_members_msg(key)) {
     Ok(resp) ->
       case is_not_found(resp) {
         True -> json_response(404, "{\"error\":\"not_found\",\"key\":\"" <> key <> "\"}")
         False -> json_response(200, format_set_members_response(key, resp))
       }
-    Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+    Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
   }
 }
 
@@ -173,9 +178,9 @@ fn handle_counter_inc(req: Request(Connection), key: String, nv: Int) -> Respons
     Ok(r) -> {
       let body = parse_json_body(r.body)
       let amount = json_get_int(body, "amount", 1)
-      case vnode_router.call(key, nv, make_counter_increment_msg(key, amount)) {
+      case coordinator_write(key, make_counter_increment_msg(key, amount)) {
         Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
-        Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+        Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
       }
     }
     Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
@@ -187,9 +192,9 @@ fn handle_counter_dec(req: Request(Connection), key: String, nv: Int) -> Respons
     Ok(r) -> {
       let body = parse_json_body(r.body)
       let amount = json_get_int(body, "amount", 1)
-      case vnode_router.call(key, nv, make_counter_decrement_msg(key, amount)) {
+      case coordinator_write(key, make_counter_decrement_msg(key, amount)) {
         Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
-        Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+        Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
       }
     }
     Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
@@ -197,13 +202,13 @@ fn handle_counter_dec(req: Request(Connection), key: String, nv: Int) -> Respons
 }
 
 fn handle_counter_value(key: String, nv: Int) -> Response(mist.ResponseData) {
-  case vnode_router.call(key, nv, make_counter_value_msg(key)) {
+  case coordinator_read(key, make_counter_value_msg(key)) {
     Ok(resp) ->
       case is_not_found(resp) {
         True -> json_response(404, "{\"error\":\"not_found\",\"key\":\"" <> key <> "\"}")
         False -> json_response(200, format_counter_value_response(key, resp))
       }
-    Error(e) -> json_response(500, "{\"error\":\"" <> e <> "\"}")
+    Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
   }
 }
 
