@@ -43,6 +43,14 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.storage_put_counter(vnode_id: integer, key: binary, value: term) :: atom
     Erlang.vordb_ffi.storage_get_all_counters(vnode_id: integer) :: map
     Erlang.vordb_ffi.storage_put_all_counters(vnode_id: integer, entries: map) :: atom
+    %% Cache write-through
+    Erlang.vordb_cache.put_lww(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_cache.put_set(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_cache.put_counter(vnode_id: integer, key: binary, value: term) :: atom
+    Erlang.vordb_cache.load_lww(vnode_id: integer, entries: map) :: atom
+    Erlang.vordb_cache.load_sets(vnode_id: integer, entries: map) :: atom
+    Erlang.vordb_cache.load_counters(vnode_id: integer, entries: map) :: atom
+
     Erlang.vordb_ffi.dirty_mark(vnode_id: integer, type: atom, key: binary) :: atom
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: integer, type: atom, keys: map) :: atom
     Erlang.vordb_ffi.dirty_confirm_ack(vnode_id: integer, peer: atom, seq: integer) :: atom
@@ -99,6 +107,9 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     transition lww_store: lww
     transition set_store: sets
     transition counter_store: counters
+    Erlang.vordb_cache.load_lww(vnode_id: vnode_id, entries: lww)
+    Erlang.vordb_cache.load_sets(vnode_id: vnode_id, entries: sets)
+    Erlang.vordb_cache.load_counters(vnode_id: vnode_id, entries: counters)
   end
 
   on {:put, key: K, value: V} do
@@ -106,6 +117,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     entry = Erlang.vordb_ffi.entry_new(value: V, timestamp: ts, node_id: node_id)
     transition lww_store: map_put(lww_store, K, entry)
     Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: entry)
+    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: entry)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :lww, key: K)
     emit {:ok, timestamp: ts}
   end
@@ -122,6 +134,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     entry = Erlang.vordb_ffi.entry_tombstone(timestamp: ts, node_id: node_id)
     transition lww_store: map_put(lww_store, K, entry)
     Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: entry)
+    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: entry)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :lww, key: K)
     emit {:deleted, key: K, timestamp: ts}
   end
@@ -129,6 +142,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   on {:lww_sync, remote_lww_store: R} do
     transition lww_store: map_merge(lww_store, R, :lww)
     Erlang.vordb_ffi.storage_put_all_lww(vnode_id: vnode_id, entries: lww_store)
+    Erlang.vordb_cache.load_lww(vnode_id: vnode_id, entries: lww_store)
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :lww, keys: R)
   end
 
@@ -137,6 +151,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     updated = vordb/or_set.add_element(state: current, element: E, node_id: node_id)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
+    Erlang.vordb_cache.put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
@@ -146,6 +161,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     updated = vordb/or_set.remove_element(state: current, element: E)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
+    Erlang.vordb_cache.put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
@@ -165,6 +181,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     merged = vordb/or_set.merge_stores(local: set_store, remote: R)
     transition set_store: merged
     Erlang.vordb_ffi.storage_put_all_sets(vnode_id: vnode_id, entries: set_store)
+    Erlang.vordb_cache.load_sets(vnode_id: vnode_id, entries: set_store)
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :set, keys: R)
   end
 
@@ -173,6 +190,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     updated = vordb/counter.increment(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
+    Erlang.vordb_cache.put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
@@ -182,6 +200,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     updated = vordb/counter.decrement(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
+    Erlang.vordb_cache.put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
@@ -201,6 +220,7 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     merged = vordb/counter.merge_stores(local: counter_store, remote: R)
     transition counter_store: merged
     Erlang.vordb_ffi.storage_put_all_counters(vnode_id: vnode_id, entries: counter_store)
+    Erlang.vordb_cache.load_counters(vnode_id: vnode_id, entries: counter_store)
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :counter, keys: R)
   end
 

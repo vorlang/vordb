@@ -60,6 +60,7 @@ start_kv_store(NodeId, VnodeId) ->
         _ -> ok
     end,
     vordb_registry:start(),
+    vordb_cache:init(),
     {ok, Pid} = gen_server:start_link('Elixir.Vor.Agent.KvStore',
         [{node_id, NodeId}, {vnode_id, VnodeId}, {sync_interval_ms, 600000}], []),
     Pid.
