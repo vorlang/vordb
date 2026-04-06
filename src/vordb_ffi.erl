@@ -189,58 +189,29 @@ entry_lookup(Store, Key) ->
 
 %% ===== OR-Set helpers =====
 
-orset_empty() -> #{entries => #{}, tombstones => #{}}.
+orset_empty() -> 'vordb@or_set':empty().
 
 orset_get_or_empty(Store, Key) ->
-    maps:get(Key, Store, orset_empty()).
+    'vordb@or_set':get_or_empty(Store, Key).
 
 orset_has_key(Store, Key) ->
-    maps:is_key(Key, Store).
+    'vordb@or_set':has_key(Store, Key).
 
-orset_add_element(SetState, Element, Tag) ->
-    Entries = maps:get(entries, SetState),
-    Existing = maps:get(Element, Entries, #{}),
-    NewTags = maps:put(Tag, true, Existing),
-    SetState#{entries := maps:put(Element, NewTags, Entries)}.
+orset_add_element(SetState, Element, NodeId) ->
+    'vordb@or_set':add_element(SetState, Element, NodeId).
 
 orset_remove_element(SetState, Element) ->
-    Entries = maps:get(entries, SetState),
-    Tombstones = maps:get(tombstones, SetState),
-    case maps:get(Element, Entries, undefined) of
-        undefined -> SetState;
-        Tags ->
-            ExistingTombs = maps:get(Element, Tombstones, #{}),
-            NewTombs = maps:merge(ExistingTombs, Tags),
-            SetState#{tombstones := maps:put(Element, NewTombs, Tombstones)}
-    end.
+    'vordb@or_set':remove_element(SetState, Element).
 
 orset_read_elements(SetState) ->
-    Entries = maps:get(entries, SetState),
-    Tombstones = maps:get(tombstones, SetState),
-    Elements = maps:fold(fun(Element, Tags, Acc) ->
-        DeadTags = maps:get(Element, Tombstones, #{}),
-        LiveTags = maps:without(maps:keys(DeadTags), Tags),
-        case maps:size(LiveTags) > 0 of
-            true -> [Element | Acc];
-            false -> Acc
-        end
-    end, [], Entries),
-    lists:sort(Elements).
+    'vordb@or_set':read_elements(SetState).
 
-orset_make_tag(NodeId, Timestamp, Counter) ->
-    #{node_id => NodeId, timestamp => Timestamp, counter => Counter}.
+orset_make_tag(NodeId, _Timestamp, _Counter) ->
+    %% Deprecated — ORSWOT doesn't use external tags. Returns node_id for compatibility.
+    NodeId.
 
 orset_merge_stores(Local, Remote) ->
-    maps:merge_with(fun(_K, L, R) -> orset_merge(L, R) end, Local, Remote).
-
-orset_merge(Local, Remote) ->
-    #{
-        entries => merge_tag_maps(maps:get(entries, Local), maps:get(entries, Remote)),
-        tombstones => merge_tag_maps(maps:get(tombstones, Local), maps:get(tombstones, Remote))
-    }.
-
-merge_tag_maps(A, B) ->
-    maps:merge_with(fun(_K, TagsA, TagsB) -> maps:merge(TagsA, TagsB) end, A, B).
+    'vordb@or_set':merge_stores(Local, Remote).
 
 %% ===== Counter helpers =====
 

@@ -8,17 +8,15 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
 
   state lww_store: map
   state set_store: map
-  state set_tag_counter: integer
   state counter_store: map
 
   %% Pure Gleam functions — CRDT operations, entry helpers, map utils
   extern gleam do
     vordb/or_set.get_or_empty(store: map, key: binary) :: term
     vordb/or_set.has_key(store: map, key: binary) :: atom
-    vordb/or_set.add_element(state: term, element: binary, tag: term) :: term
+    vordb/or_set.add_element(state: term, element: binary, node_id: binary) :: term
     vordb/or_set.remove_element(state: term, element: binary) :: term
     vordb/or_set.read_elements(state: term) :: list
-    vordb/or_set.make_tag(node_id: binary, timestamp: integer, counter: integer) :: term
     vordb/or_set.merge_stores(local: map, remote: map) :: map
 
     vordb/counter.get_or_empty(store: map, key: binary) :: term
@@ -135,12 +133,8 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
   end
 
   on {:set_add, key: K, element: E} do
-    ts = Erlang.vordb_ffi.system_time_ms()
-    counter = set_tag_counter + 1
-    transition set_tag_counter: counter
-    tag = vordb/or_set.make_tag(node_id: node_id, timestamp: ts, counter: counter)
     current = vordb/or_set.get_or_empty(store: set_store, key: K)
-    updated = vordb/or_set.add_element(state: current, element: E, tag: tag)
+    updated = vordb/or_set.add_element(state: current, element: E, node_id: node_id)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)

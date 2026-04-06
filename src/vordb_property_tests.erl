@@ -127,17 +127,18 @@ prop_orset_idempotent() ->
 prop_orset_add_preserved() ->
     Base = rand_orset(),
     Element = rand_bin(),
-    Tag = vordb_ffi:orset_make_tag(
-        lists:nth(rand:uniform(length(?NODES)), ?NODES),
-        rand:uniform(10000),
-        rand:uniform(1000)),
-    WithAdd = vordb_ffi:orset_add_element(Base, Element, Tag),
+    NodeId = lists:nth(rand:uniform(length(?NODES)), ?NODES),
+    WithAdd = vordb_ffi:orset_add_element(Base, Element, NodeId),
     Other = rand_orset(),
     Merged = merge_orset(WithAdd, Other),
-    %% Element is present unless Other has the exact same tag in tombstones
-    OtherTombs = maps:get(Element, maps:get(tombstones, Other), #{}),
-    case maps:is_key(Tag, OtherTombs) of
-        true -> true;  %% Tag tombstoned by other, element may be absent — OK
+    %% Element is present unless Other's clock dominates the add's dot
+    %% For ORSWOT: element survives if its dot is not dominated by Other's clock
+    WithAddClock = element(3, WithAdd),  %% Orswot clock field
+    OtherClock = element(3, Other),
+    DotCounter = maps:get(NodeId, WithAddClock, 0),
+    OtherNodeCounter = maps:get(NodeId, OtherClock, 0),
+    case OtherNodeCounter >= DotCounter of
+        true -> true;  %% Other has seen this add and may have removed it
         false -> lists:member(Element, vordb_ffi:orset_read_elements(Merged))
     end.
 
@@ -220,10 +221,7 @@ rand_orset() ->
     lists:foldl(fun(_, S) ->
         case rand:uniform(2) of
             1 -> vordb_ffi:orset_add_element(S, rand_bin(),
-                    vordb_ffi:orset_make_tag(
-                        lists:nth(rand:uniform(length(?NODES)), ?NODES),
-                        rand:uniform(10000),
-                        rand:uniform(1000)));
+                    lists:nth(rand:uniform(length(?NODES)), ?NODES));
             2 -> vordb_ffi:orset_remove_element(S, rand_bin())
         end
     end, vordb_ffi:orset_get_or_empty(#{}, unused), lists:seq(1, N)).

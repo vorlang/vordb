@@ -8,16 +8,14 @@ pub type LwwEntry {
   Tombstone(timestamp: Int, node_id: String)
 }
 
-/// Unique tag for OR-Set operations
-pub type UniqueTag {
-  UniqueTag(node_id: String, timestamp: Int, counter: Int)
-}
-
-/// OR-Set state for a single key
-pub type OrSetState {
-  OrSetState(
-    entries: Dict(String, Set(UniqueTag)),
-    tombstones: Dict(String, Set(UniqueTag)),
+/// ORSWOT — OR-Set Without Tombstones
+/// Bounded size: O(elements × nodes) instead of O(total_operations)
+pub type Orswot {
+  Orswot(
+    entries: Dict(String, Dict(String, Int)),
+    // element → {node_id → counter} ("dots")
+    clock: Dict(String, Int),
+    // node_id → max counter seen ("causal context")
   )
 }
 
