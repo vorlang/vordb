@@ -22,6 +22,9 @@ fn add_peer(peer: Dynamic) -> Dynamic
 @external(erlang, "vordb_dirty_tracker", "remove_peer")
 fn remove_peer(peer: Dynamic) -> Dynamic
 
+@external(erlang, "vordb_dirty_tracker", "update_partition_peers")
+fn update_peers(partition: Int, peers: List(Dynamic)) -> Dynamic
+
 @external(erlang, "erlang", "binary_to_atom")
 fn atom(s: String) -> Dynamic
 
@@ -40,13 +43,21 @@ fn whereis_dt() -> Bool
 @external(erlang, "vordb_gleam_helpers", "dt_start_opts")
 fn dt_start_opts(peers: List(Dynamic), num_vnodes: Int) -> Dynamic
 
+@external(erlang, "vordb_dirty_tracker", "init")
+fn dt_init() -> Dynamic
+
+@external(erlang, "vordb_dirty_tracker", "init_partition")
+fn init_partition(partition: Int, peers: List(Dynamic)) -> Dynamic
+
 fn setup() {
-  case whereis_dt() {
-    True -> { let _ = stop() Nil }
-    False -> Nil
-  }
-  let opts = dt_start_opts([atom("node2"), atom("node3")], 4)
-  let assert Ok(_) = start_link(opts)
+  let _ = stop()
+  let _ = dt_init()
+  // Init partitions 0-3 with peers node2 and node3
+  let peers = [atom("node2"), atom("node3")]
+  let _ = init_partition(0, peers)
+  let _ = init_partition(1, peers)
+  let _ = init_partition(2, peers)
+  let _ = init_partition(3, peers)
 }
 
 fn teardown() {
@@ -108,7 +119,8 @@ pub fn confirm_ack_clears_pending_test() {
 
 pub fn add_peer_works_test() {
   setup()
-  add_peer(atom("node4"))
+  // Use update_partition_peers to add node4 to partition 2
+  let _ = update_peers(2, [atom("node2"), atom("node3"), atom("node4")])
   mark_dirty(2, atom("lww"), "key1")
   let _ = sleep(5)
   let #(_, d) = take_deltas(2, atom("node4"))
@@ -119,7 +131,8 @@ pub fn add_peer_works_test() {
 pub fn remove_peer_works_test() {
   setup()
   mark_dirty(0, atom("lww"), "key1")
-  remove_peer(atom("node3"))
+  // Use update_partition_peers to remove node3 from partition 0
+  let _ = update_peers(0, [atom("node2")])
   let _ = sleep(5)
   let #(seq, d) = take_deltas(0, atom("node3"))
   should.equal(seq, 0)

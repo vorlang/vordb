@@ -2,7 +2,8 @@
 -export([whereis_dt/0]).
 
 whereis_dt() ->
-    case whereis(vordb_dirty_tracker) of
+    %% ETS-based tracker — check if tables exist
+    case ets:whereis(vordb_dirty) of
         undefined -> false;
         _ -> true
     end.

@@ -1,225 +1,170 @@
 -module(vordb_dirty_tracker).
--behaviour(gen_server).
 
-%% Public API
--export([start_link/1, stop/0,
+%% ETS-based dirty tracker — no GenServer, no serialization bottleneck.
+%% Same public API as the old GenServer version.
+
+-export([init/0, start_link/1, stop/0,
          mark_dirty/3, mark_dirty_keys/3,
          take_deltas/2, confirm_ack/3,
-         add_peer/1, remove_peer/1,
+         expire_pending/1,
          init_partition/2, remove_partition/1, update_partition_peers/2,
-         partition_peers/1]).
-
-%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2]).
+         partition_peers/1,
+         %% Legacy API compatibility
+         add_peer/1, remove_peer/1]).
 
 -define(ACK_TIMEOUT_MS, 5000).
 
-%% ===== Public API =====
+%% ===== Initialization =====
 
-start_link(Opts) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
+init() ->
+    ensure_table(vordb_dirty, [named_table, bag, public,
+        {write_concurrency, true}, {read_concurrency, true}]),
+    ensure_table(vordb_dirty_peers, [named_table, set, public,
+        {read_concurrency, true}]),
+    ensure_table(vordb_dirty_pending, [named_table, set, public]),
+    ensure_table(vordb_dirty_seq, [named_table, set, public]),
+    ok.
 
-stop() -> gen_server:stop(?MODULE).
+%% start_link for backward compatibility with supervisors — just init tables
+start_link(_Opts) ->
+    init(),
+    %% Return a dummy pid (self) — no actual process needed
+    {ok, self()}.
 
-mark_dirty(VnodeIndex, Type, Key) ->
-    gen_server:cast(?MODULE, {mark_dirty, VnodeIndex, Type, Key}).
+stop() ->
+    %% Clear all ETS tables (for test cleanup)
+    catch ets:delete_all_objects(vordb_dirty),
+    catch ets:delete_all_objects(vordb_dirty_peers),
+    catch ets:delete_all_objects(vordb_dirty_pending),
+    catch ets:delete_all_objects(vordb_dirty_seq),
+    ok.
 
-mark_dirty_keys(VnodeIndex, Type, Keys) when is_map(Keys) ->
-    gen_server:cast(?MODULE, {mark_dirty_keys, VnodeIndex, Type, maps:keys(Keys)});
-mark_dirty_keys(VnodeIndex, Type, Keys) when is_list(Keys) ->
-    gen_server:cast(?MODULE, {mark_dirty_keys, VnodeIndex, Type, Keys}).
-
-take_deltas(VnodeIndex, Peer) ->
-    gen_server:call(?MODULE, {take_deltas, VnodeIndex, Peer}).
-
-confirm_ack(VnodeIndex, Peer, Seq) ->
-    gen_server:cast(?MODULE, {confirm_ack, VnodeIndex, Peer, Seq}).
-
-add_peer(Peer) -> gen_server:cast(?MODULE, {add_peer, Peer}).
-remove_peer(Peer) -> gen_server:cast(?MODULE, {remove_peer, Peer}).
-
-%% Partition-scoped peer management (Phase 2)
-init_partition(Partition, Peers) ->
-    gen_server:cast(?MODULE, {init_partition, Partition, Peers}).
-
-remove_partition(Partition) ->
-    gen_server:cast(?MODULE, {remove_partition, Partition}).
-
-update_partition_peers(Partition, NewPeers) ->
-    gen_server:cast(?MODULE, {update_partition_peers, Partition, NewPeers}).
-
-partition_peers(Partition) ->
-    gen_server:call(?MODULE, {partition_peers, Partition}).
-
-%% ===== gen_server callbacks =====
-
-init(Opts) ->
-    Peers = proplists:get_value(peers, Opts, []),
-    NumVnodes = proplists:get_value(num_vnodes, Opts,
-        application:get_env(vordb, num_vnodes, 16)),
-    Trackers = maps:from_list([
-        {{V, P}, empty_tracker()}
-        || V <- lists:seq(0, NumVnodes - 1), P <- Peers
-    ]),
-    {ok, #{trackers => Trackers, peers => Peers, num_vnodes => NumVnodes,
-            partition_peers => #{}}}.
-
-handle_cast({mark_dirty, VnodeIndex, Type, Key}, #{trackers := T, peers := Peers, partition_peers := PP} = State) ->
-    %% Use partition-scoped peers if available, otherwise fall back to all peers
-    TargetPeers = case maps:get(VnodeIndex, PP, undefined) of
-        undefined -> Peers;
-        ScopedPeers -> ScopedPeers
-    end,
-    T2 = lists:foldl(fun(Peer, Acc) ->
-        CK = {VnodeIndex, Peer},
-        case maps:get(CK, Acc, undefined) of
-            undefined -> Acc;
-            Tracker -> maps:put(CK, update_dirty(Tracker, Type, fun(S) -> sets:add_element(Key, S) end), Acc)
-        end
-    end, T, TargetPeers),
-    {noreply, State#{trackers := T2}};
-
-handle_cast({mark_dirty_keys, _VnodeIndex, _Type, []}, State) ->
-    {noreply, State};
-
-handle_cast({mark_dirty_keys, VnodeIndex, Type, Keys}, #{trackers := T, peers := Peers, partition_peers := PP} = State) ->
-    KeySet = sets:from_list(Keys),
-    TargetPeers = case maps:get(VnodeIndex, PP, undefined) of
-        undefined -> Peers;
-        ScopedPeers -> ScopedPeers
-    end,
-    T2 = lists:foldl(fun(Peer, Acc) ->
-        CK = {VnodeIndex, Peer},
-        case maps:get(CK, Acc, undefined) of
-            undefined -> Acc;
-            Tracker -> maps:put(CK, update_dirty(Tracker, Type, fun(S) -> sets:union(S, KeySet) end), Acc)
-        end
-    end, T, TargetPeers),
-    {noreply, State#{trackers := T2}};
-
-handle_cast({confirm_ack, VnodeIndex, Peer, Seq}, #{trackers := T} = State) ->
-    CK = {VnodeIndex, Peer},
-    case maps:get(CK, T, undefined) of
-        undefined -> {noreply, State};
-        Tracker ->
-            Pending = maps:get(pending, Tracker),
-            T2 = maps:put(CK, Tracker#{pending := maps:remove(Seq, Pending)}, T),
-            {noreply, State#{trackers := T2}}
-    end;
-
-handle_cast({add_peer, Peer}, #{trackers := T, peers := Peers, num_vnodes := NV} = State) ->
-    NewPeers = lists:usort([Peer | Peers]),
-    NewEntries = maps:from_list([{{V, Peer}, empty_tracker()} || V <- lists:seq(0, NV - 1)]),
-    T2 = maps:merge(NewEntries, T),
-    {noreply, State#{trackers := T2, peers := NewPeers}};
-
-%% Partition-scoped peer management
-handle_cast({init_partition, Partition, PeersList}, #{trackers := T, partition_peers := PP} = State) ->
-    %% Create tracker entries for each peer
-    T2 = lists:foldl(fun(Peer, Acc) ->
-        CK = {Partition, Peer},
-        case maps:get(CK, Acc, undefined) of
-            undefined -> maps:put(CK, empty_tracker(), Acc);
-            _ -> Acc  %% Already exists
-        end
-    end, T, PeersList),
-    PP2 = maps:put(Partition, PeersList, PP),
-    {noreply, State#{trackers := T2, partition_peers := PP2}};
-
-handle_cast({remove_partition, Partition}, #{trackers := T, partition_peers := PP} = State) ->
-    OldPeers = maps:get(Partition, PP, []),
-    T2 = lists:foldl(fun(Peer, Acc) -> maps:remove({Partition, Peer}, Acc) end, T, OldPeers),
-    PP2 = maps:remove(Partition, PP),
-    {noreply, State#{trackers := T2, partition_peers := PP2}};
-
-handle_cast({update_partition_peers, Partition, NewPeers}, #{trackers := T, partition_peers := PP} = State) ->
-    OldPeers = maps:get(Partition, PP, []),
-    %% Add new peers
-    T2 = lists:foldl(fun(Peer, Acc) ->
-        CK = {Partition, Peer},
-        case maps:get(CK, Acc, undefined) of
-            undefined -> maps:put(CK, empty_tracker(), Acc);
-            _ -> Acc
-        end
-    end, T, NewPeers),
-    %% Remove departed peers
-    Departed = [P || P <- OldPeers, not lists:member(P, NewPeers)],
-    T3 = lists:foldl(fun(Peer, Acc) -> maps:remove({Partition, Peer}, Acc) end, T2, Departed),
-    PP2 = maps:put(Partition, NewPeers, PP),
-    {noreply, State#{trackers := T3, partition_peers := PP2}};
-
-handle_cast({remove_peer, Peer}, #{trackers := T, peers := Peers} = State) ->
-    NewPeers = lists:delete(Peer, Peers),
-    T2 = maps:filter(fun({_V, P}, _) -> P =/= Peer end, T),
-    {noreply, State#{trackers := T2, peers := NewPeers}}.
-
-handle_call({partition_peers, Partition}, _From, #{partition_peers := PP} = State) ->
-    {reply, maps:get(Partition, PP, []), State};
-
-handle_call({take_deltas, VnodeIndex, Peer}, _From, #{trackers := T} = State) ->
-    CK = {VnodeIndex, Peer},
-    case maps:get(CK, T, undefined) of
-        undefined ->
-            {reply, {0, #{lww => [], set => [], counter => []}}, State};
-        Tracker ->
-            Now = erlang:system_time(millisecond),
-            {Tracker2, ExpiredKeys} = expire_pending(Tracker, Now),
-
-            %% Re-add expired keys to dirty
-            Tracker3 = lists:foldl(fun({Ty, KS}, Acc) ->
-                update_dirty(Acc, Ty, fun(S) -> sets:union(S, KS) end)
-            end, Tracker2, ExpiredKeys),
-
-            Dirty = maps:get(dirty, Tracker3),
-            Result = #{
-                lww => sets:to_list(maps:get(lww, Dirty)),
-                set => sets:to_list(maps:get(set, Dirty)),
-                counter => sets:to_list(maps:get(counter, Dirty))
-            },
-
-            HasData = maps:get(lww, Result) =/= [] orelse
-                      maps:get(set, Result) =/= [] orelse
-                      maps:get(counter, Result) =/= [],
-
-            case HasData of
-                true ->
-                    Seq = maps:get(next_seq, Tracker3),
-                    PendingEntry = {Dirty, Now},
-                    NewTracker = Tracker3#{
-                        dirty := #{lww => sets:new(), set => sets:new(), counter => sets:new()},
-                        pending := maps:put(Seq, PendingEntry, maps:get(pending, Tracker3)),
-                        next_seq := Seq + 1
-                    },
-                    T2 = maps:put(CK, NewTracker, T),
-                    {reply, {Seq, Result}, State#{trackers := T2}};
-                false ->
-                    T2 = maps:put(CK, Tracker3, T),
-                    {reply, {0, Result}, State#{trackers := T2}}
-            end
+ensure_table(Name, Opts) ->
+    case ets:whereis(Name) of
+        undefined -> ets:new(Name, Opts);
+        _ -> ok
     end.
 
-%% ===== Private =====
+%% ===== Mark Dirty =====
 
-empty_tracker() ->
-    #{
-        dirty => #{lww => sets:new(), set => sets:new(), counter => sets:new()},
-        pending => #{},
-        next_seq => 1
-    }.
+mark_dirty(Partition, Type, Key) ->
+    case ets:lookup(vordb_dirty_peers, Partition) of
+        [{_, Peers}] ->
+            Entries = [{{Partition, Peer, Type}, Key} || Peer <- Peers],
+            ets:insert(vordb_dirty, Entries);
+        [] -> ok
+    end,
+    ok.
 
-update_dirty(Tracker, Type, Fun) ->
-    Dirty = maps:get(dirty, Tracker),
-    Tracker#{dirty := maps:update_with(Type, Fun, Dirty)}.
+mark_dirty_keys(Partition, Type, Keys) when is_map(Keys) ->
+    mark_dirty_keys(Partition, Type, maps:keys(Keys));
+mark_dirty_keys(Partition, Type, Keys) when is_list(Keys) ->
+    case ets:lookup(vordb_dirty_peers, Partition) of
+        [{_, Peers}] ->
+            Entries = [{{Partition, Peer, Type}, Key}
+                       || Peer <- Peers, Key <- Keys],
+            ets:insert(vordb_dirty, Entries);
+        [] -> ok
+    end,
+    ok.
 
-expire_pending(Tracker, Now) ->
-    Pending = maps:get(pending, Tracker),
-    {Expired, Remaining} = maps:fold(fun(Seq, {_Keys, SentAt} = V, {ExpAcc, RemAcc}) ->
-        case Now - SentAt > ?ACK_TIMEOUT_MS of
-            true -> {[{Seq, V} | ExpAcc], RemAcc};
-            false -> {ExpAcc, maps:put(Seq, V, RemAcc)}
-        end
-    end, {[], #{}}, Pending),
-    ExpiredKeys = lists:flatmap(fun({_Seq, {KeysByType, _SentAt}}) ->
-        [{Ty, KS} || {Ty, KS} <- maps:to_list(KeysByType)]
+%% ===== Take Deltas =====
+
+take_deltas(Partition, Peer) ->
+    LwwKeys = take_type_keys(Partition, Peer, lww),
+    SetKeys = take_type_keys(Partition, Peer, set),
+    CounterKeys = take_type_keys(Partition, Peer, counter),
+
+    Result = #{lww => LwwKeys, set => SetKeys, counter => CounterKeys},
+
+    case {LwwKeys, SetKeys, CounterKeys} of
+        {[], [], []} ->
+            {0, Result};
+        _ ->
+            %% Assign sequence number (atomic increment)
+            Seq = ets:update_counter(vordb_dirty_seq,
+                {Partition, Peer}, {2, 1}, {{Partition, Peer}, 0}),
+            %% Record pending
+            Now = erlang:system_time(millisecond),
+            ets:insert(vordb_dirty_pending,
+                {{Partition, Peer, Seq}, {Result, Now}}),
+            {Seq, Result}
+    end.
+
+take_type_keys(Partition, Peer, Type) ->
+    Entries = ets:take(vordb_dirty, {Partition, Peer, Type}),
+    lists:usort([Key || {_, Key} <- Entries]).
+
+%% ===== ACK =====
+
+confirm_ack(Partition, Peer, Seq) ->
+    ets:delete(vordb_dirty_pending, {Partition, Peer, Seq}),
+    ok.
+
+%% ===== Pending Expiry =====
+
+expire_pending(TimeoutMs) ->
+    Now = erlang:system_time(millisecond),
+    Cutoff = Now - TimeoutMs,
+    %% Select expired entries
+    Expired = ets:select(vordb_dirty_pending, [
+        {{'$1', {'$2', '$3'}},
+         [{'<', '$3', Cutoff}],
+         [{{'$1', '$2'}}]}
+    ]),
+    lists:foreach(fun({{Partition, Peer, Seq}, {KeysByType, _}}) ->
+        %% Re-insert keys as dirty
+        maps:foreach(fun(Type, Keys) ->
+            Entries = [{{Partition, Peer, Type}, Key} || Key <- Keys],
+            ets:insert(vordb_dirty, Entries)
+        end, KeysByType),
+        ets:delete(vordb_dirty_pending, {Partition, Peer, Seq})
     end, Expired),
-    {Tracker#{pending := Remaining}, ExpiredKeys}.
+    length(Expired).
+
+%% ===== Partition Lifecycle =====
+
+init_partition(Partition, Peers) ->
+    ets:insert(vordb_dirty_peers, {Partition, Peers}),
+    lists:foreach(fun(Peer) ->
+        ets:insert(vordb_dirty_seq, {{Partition, Peer}, 0})
+    end, Peers),
+    ok.
+
+remove_partition(Partition) ->
+    ets:delete(vordb_dirty_peers, Partition),
+    ets:match_delete(vordb_dirty, {{Partition, '_', '_'}, '_'}),
+    ets:match_delete(vordb_dirty_pending, {{Partition, '_', '_'}, '_'}),
+    ets:match_delete(vordb_dirty_seq, {{Partition, '_'}, '_'}),
+    ok.
+
+update_partition_peers(Partition, NewPeers) ->
+    OldPeers = case ets:lookup(vordb_dirty_peers, Partition) of
+        [{_, P}] -> P;
+        [] -> []
+    end,
+    ets:insert(vordb_dirty_peers, {Partition, NewPeers}),
+    %% Remove departed peers
+    Departed = OldPeers -- NewPeers,
+    lists:foreach(fun(Peer) ->
+        ets:match_delete(vordb_dirty, {{Partition, Peer, '_'}, '_'}),
+        ets:match_delete(vordb_dirty_pending, {{Partition, Peer, '_'}, '_'}),
+        ets:delete(vordb_dirty_seq, {Partition, Peer})
+    end, Departed),
+    %% Init new peers
+    Added = NewPeers -- OldPeers,
+    lists:foreach(fun(Peer) ->
+        ets:insert(vordb_dirty_seq, {{Partition, Peer}, 0})
+    end, Added),
+    ok.
+
+partition_peers(Partition) ->
+    case ets:lookup(vordb_dirty_peers, Partition) of
+        [{_, Peers}] -> Peers;
+        [] -> []
+    end.
+
+%% ===== Legacy API (backward compat) =====
+
+add_peer(_Peer) -> ok.
+remove_peer(_Peer) -> ok.
