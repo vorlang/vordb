@@ -16,6 +16,10 @@ start_storage() ->
         Pid -> gen_server:stop(Pid)
     end,
     {ok, _} = vordb_ffi:storage_start(list_to_binary(Dir)),
+    %% Create CF for test partitions (0-7 for ring_size=8)
+    lists:foreach(fun(P) ->
+        gen_server:call(vordb_storage, {cf_create, P})
+    end, lists:seq(0, 7)),
     {ok, Dir}.
 
 stop_storage() ->

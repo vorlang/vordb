@@ -40,6 +40,10 @@ setup() ->
     catch vordb_ffi:storage_stop(),
     catch gen_server:stop(vordb_dirty_tracker),
     {ok, _} = vordb_ffi:storage_start(Dir),
+    %% Create CFs for test partitions
+    lists:foreach(fun(P) ->
+        gen_server:call(vordb_storage, {cf_create, P})
+    end, lists:seq(0, 7)),
     {ok, _} = vordb_dirty_tracker:start_link([{peers, []}, {num_vnodes, 4}]),
     Dir.
 

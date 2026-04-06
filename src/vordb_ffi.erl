@@ -51,7 +51,7 @@
     init/1, handle_call/3, handle_cast/2, terminate/2
 ]).
 
-%% ===== Storage Lifecycle =====
+%% ===== Storage Lifecycle (Column Family based) =====
 
 storage_start(DataDir) ->
     filelib:ensure_dir(filename:join(DataDir, "dummy")),
@@ -63,59 +63,136 @@ storage_stop() ->
 %% ===== Gen_server callbacks =====
 
 init(DataDir) ->
-    DbOpts = [{create_if_missing, true}, {write_buffer_size, 64 * 1024 * 1024}, {max_open_files, 1000}],
     DirStr = case is_binary(DataDir) of
         true -> binary_to_list(DataDir);
         false -> DataDir
     end,
-    case rocksdb:open(DirStr, DbOpts) of
-        {ok, Db} -> {ok, #{db => Db}};
-        {error, Reason} -> {stop, {rocksdb_open_failed, Reason}}
+    DbOpts = [{create_if_missing, true}, {write_buffer_size, 64 * 1024 * 1024}, {max_open_files, 1000}],
+    CfOpts = [{write_buffer_size, 4 * 1024 * 1024}, {max_write_buffer_number, 2}],
+
+    %% List existing CFs (or default for fresh db)
+    CfNames = case rocksdb:list_column_families(DirStr, DbOpts) of
+        {ok, Names} -> Names;
+        {error, _} -> ["default"]
+    end,
+
+    %% Open with all existing CFs
+    CfSpecs = [{N, CfOpts} || N <- CfNames],
+    case rocksdb:open_with_cf(DirStr, DbOpts, CfSpecs) of
+        {ok, Db, CfHandles} ->
+            %% Build name→handle map
+            HandleMap = maps:from_list(lists:zip(CfNames, CfHandles)),
+            DefaultCf = maps:get("default", HandleMap),
+            {ok, #{db => Db, cf_handles => HandleMap, default_cf => DefaultCf, path => DirStr}};
+        {error, Reason} ->
+            {stop, {rocksdb_open_failed, Reason}}
     end.
 
-handle_call({put, Key, Value}, _From, #{db := Db} = State) ->
-    Encoded = erlang:term_to_binary(Value),
-    case rocksdb:put(Db, Key, Encoded, []) of
+%% CF-based put: writes to partition's column family
+handle_call({cf_put, Partition, Key, Value}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, {error, unknown_partition}, State};
+        CfHandle ->
+            Encoded = erlang:term_to_binary(Value),
+            case rocksdb:put(Db, CfHandle, Key, Encoded, []) of
+                ok -> {reply, ok, State};
+                {error, R} -> {reply, {error, R}, State}
+            end
+    end;
+
+%% CF-based get
+handle_call({cf_get, Partition, Key}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, not_found, State};
+        CfHandle ->
+            case rocksdb:get(Db, CfHandle, Key, []) of
+                {ok, Bin} -> {reply, {ok, erlang:binary_to_term(Bin)}, State};
+                not_found -> {reply, not_found, State};
+                {error, R} -> {reply, {error, R}, State}
+            end
+    end;
+
+%% CF-based get_all by type prefix within a partition's CF
+handle_call({cf_get_all, Partition, TypePrefix}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, #{}, State};
+        CfHandle ->
+            {ok, Iter} = rocksdb:iterator(Db, CfHandle, []),
+            PrefixBin = <<TypePrefix/binary, ":">>,
+            PLen = byte_size(PrefixBin),
+            Entries = iterate_cf_prefix(Iter, rocksdb:iterator_move(Iter, first), PrefixBin, PLen, #{}),
+            rocksdb:iterator_close(Iter),
+            {reply, Entries, State}
+    end;
+
+%% CF-based batch put within a partition's CF
+handle_call({cf_put_all, Partition, TypePrefix, Entries}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, {error, unknown_partition}, State};
+        CfHandle ->
+            Batch = maps:fold(fun(K, V, Acc) ->
+                FullKey = <<TypePrefix/binary, ":", K/binary>>,
+                [{put, CfHandle, FullKey, erlang:term_to_binary(V)} | Acc]
+            end, [], Entries),
+            case rocksdb:write(Db, Batch, []) of
+                ok -> {reply, ok, State};
+                {error, R} -> {reply, {error, R}, State}
+            end
+    end;
+
+%% Delete all data in a partition's CF
+handle_call({cf_delete_partition, Partition}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, ok, State};
+        CfHandle ->
+            {ok, Iter} = rocksdb:iterator(Db, CfHandle, []),
+            delete_all_in_cf(Db, CfHandle, Iter, rocksdb:iterator_move(Iter, first)),
+            rocksdb:iterator_close(Iter),
+            {reply, ok, State}
+    end;
+
+%% Create column family for a new partition
+handle_call({cf_create, Partition}, _From, #{db := Db, cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined ->
+            CfOpts = [{write_buffer_size, 4 * 1024 * 1024}, {max_write_buffer_number, 2}],
+            case rocksdb:create_column_family(Db, CfName, CfOpts) of
+                {ok, CfHandle} ->
+                    NewCfH = maps:put(CfName, CfHandle, CfH),
+                    {reply, ok, State#{cf_handles := NewCfH}};
+                {error, R} -> {reply, {error, R}, State}
+            end;
+        _ -> {reply, ok, State}  %% Already exists
+    end;
+
+%% Drop column family
+handle_call({cf_drop, Partition}, _From, #{cf_handles := CfH} = State) ->
+    CfName = cf_name(Partition),
+    case maps:get(CfName, CfH, undefined) of
+        undefined -> {reply, ok, State};
+        CfHandle ->
+            catch rocksdb:drop_column_family(CfHandle),
+            NewCfH = maps:remove(CfName, CfH),
+            {reply, ok, State#{cf_handles := NewCfH}}
+    end;
+
+%% Metadata in default CF
+handle_call({meta_put, Key, Value}, _From, #{db := Db, default_cf := Dcf} = State) ->
+    case rocksdb:put(Db, Dcf, Key, Value, []) of
         ok -> {reply, ok, State};
         {error, R} -> {reply, {error, R}, State}
     end;
 
-handle_call({get, Key}, _From, #{db := Db} = State) ->
-    case rocksdb:get(Db, Key, []) of
-        {ok, Bin} -> {reply, {ok, erlang:binary_to_term(Bin)}, State};
+handle_call({meta_get, Key}, _From, #{db := Db, default_cf := Dcf} = State) ->
+    case rocksdb:get(Db, Dcf, Key, []) of
+        {ok, Bin} -> {reply, {ok, Bin}, State};
         not_found -> {reply, not_found, State};
-        {error, R} -> {reply, {error, R}, State}
-    end;
-
-handle_call({delete, Key}, _From, #{db := Db} = State) ->
-    case rocksdb:delete(Db, Key, []) of
-        ok -> {reply, ok, State};
-        {error, R} -> {reply, {error, R}, State}
-    end;
-
-handle_call({get_all_prefix, Prefix}, _From, #{db := Db} = State) ->
-    {ok, Iter} = rocksdb:iterator(Db, []),
-    Entries = iterate_prefix(Iter, rocksdb:iterator_move(Iter, first), Prefix, byte_size(Prefix), #{}),
-    rocksdb:iterator_close(Iter),
-    {reply, Entries, State};
-
-handle_call({delete_partition, Partition}, _From, #{db := Db} = State) ->
-    %% Delete all keys for all types of this partition
-    Types = [<<"lww">>, <<"set">>, <<"counter">>],
-    lists:foreach(fun(Type) ->
-        Prefix = make_prefix(Type, Partition),
-        {ok, Iter} = rocksdb:iterator(Db, []),
-        delete_by_prefix(Db, Iter, rocksdb:iterator_move(Iter, first), Prefix, byte_size(Prefix)),
-        rocksdb:iterator_close(Iter)
-    end, Types),
-    {reply, ok, State};
-
-handle_call({put_all_prefix, Prefix, Entries}, _From, #{db := Db} = State) ->
-    Batch = maps:fold(fun(K, V, Acc) ->
-        [{put, <<Prefix/binary, K/binary>>, erlang:term_to_binary(V)} | Acc]
-    end, [], Entries),
-    case rocksdb:write(Db, Batch, []) of
-        ok -> {reply, ok, State};
         {error, R} -> {reply, {error, R}, State}
     end.
 
@@ -124,6 +201,22 @@ handle_cast(_Msg, State) ->
 
 terminate(_Reason, #{db := Db}) ->
     rocksdb:close(Db).
+
+%% CF iteration helpers
+iterate_cf_prefix(Iter, {ok, Key, Value}, Prefix, PLen, Acc) ->
+    case Key of
+        <<Prefix:PLen/binary, Rest/binary>> ->
+            Entry = erlang:binary_to_term(Value),
+            iterate_cf_prefix(Iter, rocksdb:iterator_move(Iter, next), Prefix, PLen, maps:put(Rest, Entry, Acc));
+        _ ->
+            iterate_cf_prefix(Iter, rocksdb:iterator_move(Iter, next), Prefix, PLen, Acc)
+    end;
+iterate_cf_prefix(_Iter, {error, invalid_iterator}, _Prefix, _PLen, Acc) -> Acc.
+
+delete_all_in_cf(Db, CfHandle, Iter, {ok, Key, _Value}) ->
+    rocksdb:delete(Db, CfHandle, Key, []),
+    delete_all_in_cf(Db, CfHandle, Iter, rocksdb:iterator_move(Iter, next));
+delete_all_in_cf(_Db, _CfHandle, _Iter, {error, invalid_iterator}) -> ok.
 
 iterate_prefix(Iter, {ok, Key, Value}, Prefix, PrefixLen, Acc) ->
     NewAcc = case Key of
@@ -137,35 +230,29 @@ iterate_prefix(_Iter, {error, invalid_iterator}, _Prefix, _PrefixLen, Acc) ->
 
 %% ===== Storage API (Vor extern targets) =====
 
-pad(VnodeId) ->
-    iolist_to_binary(io_lib:format("~3..0B", [VnodeId])).
-
-make_prefix(Type, VnodeId) ->
-    <<Type/binary, ":", (pad(VnodeId))/binary, ":">>.
-
-make_key(Type, VnodeId, Key) ->
-    <<(make_prefix(Type, VnodeId))/binary, Key/binary>>.
+cf_name(Partition) ->
+    lists:flatten("partition_" ++ string:pad(integer_to_list(Partition), 3, leading, $0)).
 
 storage_put_lww(VnodeId, Key, Value) ->
-    gen_server:call(vordb_storage, {put, make_key(<<"lww">>, VnodeId, Key), Value}).
+    gen_server:call(vordb_storage, {cf_put, VnodeId, <<"lww:", Key/binary>>, Value}).
 storage_put_set(VnodeId, Key, Value) ->
-    gen_server:call(vordb_storage, {put, make_key(<<"set">>, VnodeId, Key), Value}).
+    gen_server:call(vordb_storage, {cf_put, VnodeId, <<"set:", Key/binary>>, Value}).
 storage_put_counter(VnodeId, Key, Value) ->
-    gen_server:call(vordb_storage, {put, make_key(<<"counter">>, VnodeId, Key), Value}).
+    gen_server:call(vordb_storage, {cf_put, VnodeId, <<"counter:", Key/binary>>, Value}).
 
 storage_get_all_lww(VnodeId) ->
-    gen_server:call(vordb_storage, {get_all_prefix, make_prefix(<<"lww">>, VnodeId)}).
+    gen_server:call(vordb_storage, {cf_get_all, VnodeId, <<"lww">>}).
 storage_get_all_sets(VnodeId) ->
-    gen_server:call(vordb_storage, {get_all_prefix, make_prefix(<<"set">>, VnodeId)}).
+    gen_server:call(vordb_storage, {cf_get_all, VnodeId, <<"set">>}).
 storage_get_all_counters(VnodeId) ->
-    gen_server:call(vordb_storage, {get_all_prefix, make_prefix(<<"counter">>, VnodeId)}).
+    gen_server:call(vordb_storage, {cf_get_all, VnodeId, <<"counter">>}).
 
 storage_put_all_lww(VnodeId, Entries) ->
-    gen_server:call(vordb_storage, {put_all_prefix, make_prefix(<<"lww">>, VnodeId), Entries}).
+    gen_server:call(vordb_storage, {cf_put_all, VnodeId, <<"lww">>, Entries}).
 storage_put_all_sets(VnodeId, Entries) ->
-    gen_server:call(vordb_storage, {put_all_prefix, make_prefix(<<"set">>, VnodeId), Entries}).
+    gen_server:call(vordb_storage, {cf_put_all, VnodeId, <<"set">>, Entries}).
 storage_put_all_counters(VnodeId, Entries) ->
-    gen_server:call(vordb_storage, {put_all_prefix, make_prefix(<<"counter">>, VnodeId), Entries}).
+    gen_server:call(vordb_storage, {cf_put_all, VnodeId, <<"counter">>, Entries}).
 
 %% ===== Entry helpers =====
 
@@ -327,7 +414,6 @@ system_time_ms() -> erlang:system_time(millisecond).
 %% Storage partition operations (for handoff)
 
 storage_iterate_partition(Partition, ChunkSize, Callback) ->
-    %% Collect all data for this partition across types
     Lww = storage_get_all_lww(Partition),
     Sets = storage_get_all_sets(Partition),
     Counters = storage_get_all_counters(Partition),
@@ -349,7 +435,7 @@ send_chunks(Entries, ChunkSize, Partition, Callback) ->
     send_chunks(Rest, ChunkSize, Partition, Callback).
 
 storage_delete_partition(Partition) ->
-    gen_server:call(vordb_storage, {delete_partition, Partition}).
+    gen_server:call(vordb_storage, {cf_delete_partition, Partition}).
 
 storage_count_partition_keys(Partition) ->
     Lww = storage_get_all_lww(Partition),
