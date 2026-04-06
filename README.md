@@ -1,56 +1,25 @@
 # VorDB
 
-**A CRDT-based distributed key-value store with verified coordination**
+**A CRDT-based distributed key-value store with verified coordination.**
 
-VorDB is a distributed database where every node accepts writes, conflicts resolve automatically using CRDTs, and the coordination layer is formally verified at compile time. Built on [Vor](https://github.com/vorlang/vor), Gleam, RocksDB, and the BEAM.
+Every node accepts writes. Conflicts resolve automatically via CRDTs. The coordination layer is formally verified at compile time using [Vor](https://github.com/vorlang/vor). Built on Gleam, Erlang, RocksDB, and the BEAM.
 
-## Why
+VorDB is the spiritual successor to Riak — with the compile-time verification Riak never had.
 
-Distributed databases have their most dangerous bugs in the coordination layer — merge functions, gossip protocols, state machine transitions. A bug in a CRDT merge function silently corrupts data across the entire cluster. These bugs are hard to find with testing because they only manifest under specific timing and network conditions.
+For the full architecture reference, see [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md).
 
-VorDB's coordination layer is written in [Vor](https://github.com/vorlang/vor), a BEAM-native language with compile-time verification. The merge function that resolves conflicts between nodes is verified to be correct before the code ever runs. The safety properties are proven, not tested.
+## Features
 
-The application layer is written in Gleam for static type safety. Vor agents call Gleam CRDT modules directly for pure operations and Erlang modules for stateful services (storage, gossip). Three layers of defense: Vor verifies coordination, Gleam's type system catches application bugs at compile time, and property tests verify CRDT merge correctness.
-
-Riak proved that CRDT-based distributed storage on the BEAM works at production scale. Riak's failure was business execution, not technology. VorDB picks up where Riak left off — with formal verification that Riak never had.
-
-## Architecture
-
-```
-Client (HTTP)
-      │
-      ▼
-HTTP API (mist — Gleam)
-      │
-      ▼
-Vnode Router (consistent hashing — Gleam)
-      │
-      ├──→ Vnode 0:  KvStore (Vor agent)
-      ├──→ Vnode 1:  KvStore (Vor agent)
-      ├──→ ...
-      └──→ Vnode 15: KvStore (Vor agent)
-                │
-            ┌───┴───┐
-            ▼       ▼
-    CRDT Merge    Extern calls
-    (verified)    ├── Gleam (CRDT ops)
-                  └── Erlang (storage, gossip)
-                        │
-                        ▼
-                  RocksDB (persistence)
-```
-
-Each node runs N virtual nodes (vnodes), each owning a portion of the keyspace. Every vnode is an independent Vor agent with its own state, its own gossip timer, and its own failure domain. A crashed vnode restarts from RocksDB without affecting other vnodes.
-
-| Layer | Language | Verified? | Role |
-|---|---|---|---|
-| Coordination | Vor | Compile-time proven | CRDT merge, gossip timing, state recovery |
-| Application | Gleam | Statically typed | CRDT types (called directly by Vor), vnode routing, HTTP, gossip dispatch |
-| Erlang services | Erlang | Tested | RocksDB storage, dirty tracker, membership, vnode supervision |
-| Storage | RocksDB (C++) | Battle-tested | Persistence, crash recovery, compression |
-| Runtime | BEAM/OTP | Battle-tested | Process isolation, distribution, fault tolerance |
-
-Vor calls Gleam modules directly for pure CRDT operations (`extern gleam`) and Erlang modules for stateful services like storage and gossip (`extern` with `Erlang.` prefix).
+- **Three CRDT types** — LWW-Register (Vor-native verified merge), ORSWOT set, PN-Counter
+- **Consistent hashing ring** — 256 partitions, N-way replication, dynamic membership
+- **Replicated writes** — any node coordinates; sloppy quorum fan-out to N replicas
+- **Delta gossip with ACKs** — bandwidth proportional to replication factor, not cluster size
+- **Partition handoff** — data streams to new owners on ring changes
+- **ETS read path** — reads bypass gen_server via write-through cache
+- **Per-partition column families** — write isolation, independent compaction
+- **Lock-free ETS dirty tracker** — no GenServer bottleneck on the write path
+- **Protobuf TCP protocol** — length-prefixed binary protocol alongside HTTP REST
+- **Telemetry + Prometheus** — `/metrics` endpoint with low-cardinality tags
 
 ## Quick Start
 
@@ -58,68 +27,39 @@ Vor calls Gleam modules directly for pure CRDT operations (`extern gleam`) and E
 
 - Erlang/OTP 25+
 - Gleam 1.0+
-- Elixir (for Vor compiler only)
-- [Vor compiler](https://github.com/vorlang/vor) (cloned alongside this repo)
+- [Vor compiler](https://github.com/vorlang/vor) cloned at `../vor`
 
-### Build
+### Build & Run
 
 ```bash
 git clone https://github.com/vorlang/vordb.git
 cd vordb
-make build    # Compiles Vor agent, then runs gleam build
+make build      # Compile proto + Vor agent + Gleam + Erlang
+make test       # Run all tests
+make run        # Start a single node (HTTP :4001, TCP :5001)
 ```
 
-`make build` first compiles `kv_store.vor` using the Vor compiler (requires the Vor repo at `../vor`), then runs `gleam build` to compile all Gleam and Erlang modules.
-
-### Run a single node
+### Multi-node cluster
 
 ```bash
-erl -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
-```
+# Node 1 (seed)
+VORDB_NODE_ID=node1 VORDB_HTTP_PORT=4001 VORDB_TCP_PORT=5001 make run
 
-The HTTP API is available at `http://localhost:4001`.
-
-### Run a 3-node cluster
-
-```bash
-# Terminal 1
-erl -sname node1 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
-
-# Terminal 2
-erl -sname node2 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
-
-# Terminal 3
-erl -sname node3 -pa build/dev/erlang/*/ebin -eval 'vordb_app:start(normal, []).'
-```
-
-### Dynamic cluster membership
-
-```bash
-# Start a 4th node and join the cluster
-curl -X POST http://localhost:4004/admin/join \
+# Node 2 — join via admin API
+VORDB_NODE_ID=node2 VORDB_HTTP_PORT=4002 VORDB_TCP_PORT=5002 make run
+curl -X POST http://localhost:4002/admin/join \
   -H "Content-Type: application/json" \
   -d '{"seed_node": "node1@localhost"}'
-
-# Leave cluster gracefully
-curl -X POST http://localhost:4004/admin/leave
-
-# View cluster membership
-curl http://localhost:4001/admin/members
 ```
 
 ### Write and read
 
 ```bash
-# Write to node 1
 curl -X PUT http://localhost:4001/kv/greeting \
   -H "Content-Type: application/json" \
-  -d '{"value": "hello world"}'
+  -d '{"value": "hello"}'
 
-# Read from node 2 (after gossip converges)
-curl http://localhost:4002/kv/greeting
-
-# Delete from node 3
-curl -X DELETE http://localhost:4003/kv/greeting
+curl http://localhost:4002/kv/greeting   # reads after gossip converges
 ```
 
 ## API
@@ -128,156 +68,53 @@ curl -X DELETE http://localhost:4003/kv/greeting
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `PUT /kv/:key` | Write a value | Body: `{"value": "..."}` → `{"ok": true, "timestamp": ...}` |
-| `GET /kv/:key` | Read a value | → `{"key": "...", "value": "..."}` or 404 |
-| `DELETE /kv/:key` | Delete a value | → `{"deleted": true, "timestamp": ...}` |
+| `PUT /kv/:key` | Write a value (`{"value": "..."}`) |
+| `GET /kv/:key` | Read a value (404 if missing) |
+| `DELETE /kv/:key` | Tombstone delete |
 
-### Sets (OR-Set)
+### Sets (ORSWOT)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST /set/:key/add` | Add element | Body: `{"element": "..."}` → `{"ok": true}` |
-| `POST /set/:key/remove` | Remove element | Body: `{"element": "..."}` → `{"ok": true}` |
-| `GET /set/:key` | List members | → `{"key": "...", "members": [...]}` or 404 |
+| `POST /set/:key/add` | Add element (`{"element": "..."}`) |
+| `POST /set/:key/remove` | Remove element |
+| `GET /set/:key` | List members |
 
 ### Counters (PN-Counter)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST /counter/:key/increment` | Increment | Body: `{"amount": 1}` (optional) → `{"ok": true}` |
-| `POST /counter/:key/decrement` | Decrement | Body: `{"amount": 1}` (optional) → `{"ok": true}` |
-| `GET /counter/:key` | Get value | → `{"key": "...", "value": N}` or 404 |
+| `POST /counter/:key/increment` | Increment (`{"amount": N}` optional) |
+| `POST /counter/:key/decrement` | Decrement |
+| `GET /counter/:key` | Get value |
 
-### Cluster
+### Cluster & Operations
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET /status` | Node status | → `{"status": "running", "num_vnodes": N}` |
-| `POST /admin/join` | Join cluster | Body: `{"seed_node": "..."}` |
-| `POST /admin/leave` | Leave cluster | |
-| `GET /admin/members` | View membership | → `{"members": [...]}` |
-| `POST /admin/full-sync` | Trigger full-state sync | For recovery |
+| `GET /status` | Node status |
+| `GET /metrics` | Prometheus scrape endpoint |
+| `POST /admin/join` | Join cluster (`{"seed_node": "..."}`) |
+| `POST /admin/leave` | Leave cluster gracefully |
+| `GET /admin/members` | View membership |
+| `POST /admin/full-sync` | Trigger on-demand full-state sync |
 
-## CRDT Types
-
-### LWW-Register (Last-Writer-Wins)
-
-Simple key-value storage. Each entry carries a timestamp and node ID. When two nodes write to the same key concurrently, the write with the higher timestamp wins. Equal timestamps are broken by node ID comparison. Deletes are tombstones.
-
-Merge is implemented in Vor using native `map_merge(:lww)` and verified at compile time.
-
-### OR-Set (Observed-Remove Set)
-
-A set where elements can be added and removed. Concurrent add and remove of the same element resolves in favor of the add (add-wins semantics). Each add is tagged with a unique identifier; a remove only affects tags it has observed.
-
-Merge is set union on tag maps — property-tested for commutativity, associativity, and idempotency.
-
-### PN-Counter (Positive-Negative Counter)
-
-A counter supporting both increment and decrement. Implemented as a pair of G-Counters: one for increments, one for decrements. The value is the difference. Each node maintains its own counts; merge takes the max per node per side.
-
-Merge is property-tested for commutativity, associativity, and idempotency.
-
-## Ring Partitioning
-
-VorDB uses a consistent hashing ring (default 256 partitions) to distribute keys across nodes. Each key maps to a partition via `hash(key) rem ring_size`. Each partition is replicated to N nodes (default 3). The ring determines which nodes hold which partitions.
-
-- Any node can coordinate any request — the coordinator forwards writes to all N replicas
-- Writes succeed if any replica is reachable (AP design — availability over consistency)
-- Adding a node triggers partition handoff — data streams from old owners to new owners
-- The ring itself propagates via gossip (periodic + event-driven)
-
-## Gossip Protocol
-
-Two gossip layers:
-
-**Data gossip** — per-vnode delta-state gossip scoped to replica peers. Each vnode sends only changed keys to the other nodes in its partition's preference list. ACK-based delivery with retry. Bandwidth proportional to replication factor, not cluster size.
-
-**Ring gossip** — cluster-wide periodic distribution of the ring data structure. Ensures all nodes converge on the same partition ownership. Higher version wins.
-
-Full-state sync is available on-demand for node joins and disaster recovery.
-
-## Persistence
-
-RocksDB provides crash recovery. When a vnode starts, its Vor agent's `on :init` handler loads persisted state from RocksDB before accepting any messages. The ring is persisted to disk and loaded on restart — a restarting node catches up via ring gossip if the ring changed while it was down.
-
-## Tests
-
-```bash
-# Build and run all tests (compiles Vor agent first)
-make test
-
-# Or separately:
-make vor         # Compile Vor agent
-gleam build      # Compile Gleam + Erlang modules
-gleam test       # Run tests
-```
-
-108 test cases and 15 property-based suites covering CRDT merge correctness (commutativity, associativity, idempotency for all three types), HTTP REST endpoints, vnode routing, delta gossip with ACK tracking, persistence across restarts, and multi-node cluster convergence.
-
-## Project Structure
-
-```
-vordb/
-├── gleam.toml                        # Gleam project config
-├── Makefile                          # Build: Vor pre-compilation + gleam build
-├── src/
-│   ├── vor/
-│   │   └── kv_store.vor              # Vor agent — verified coordination layer
-│   ├── vordb.gleam                   # Public API (typed)
-│   ├── vordb/
-│   │   ├── types.gleam               # Core type definitions
-│   │   ├── entry.gleam               # LWW entry types and helpers
-│   │   ├── or_set.gleam              # OR-Set CRDT (typed, pure)
-│   │   ├── counter.gleam             # PN-Counter CRDT (typed, pure)
-│   │   ├── serializer.gleam          # Term serialization
-│   │   ├── map_utils.gleam           # Map utilities
-│   │   ├── ring.gleam                # Consistent hashing ring (pure)
-│   │   ├── storage.gleam             # RocksDB typed wrapper
-│   │   ├── vnode_router.gleam        # Ring-based partition routing
-│   │   ├── cluster.gleam             # Peer discovery
-│   │   ├── gossip.gleam              # Gossip dispatch
-│   │   └── http_router.gleam         # HTTP API (mist)
-│   ├── vordb_ffi.erl                 # Erlang — RocksDB storage gen_server, LWW entry helpers
-│   ├── vordb_http_ffi.erl            # HTTP JSON parsing and response formatting
-│   ├── vordb_coordinator.erl         # Write coordinator — fans out to N replicas
-│   ├── vordb_ring_manager.erl        # Ring state, persistence, queries
-│   ├── vordb_ring_gossip.erl         # Ring distribution across cluster
-│   ├── vordb_dirty_tracker.erl       # Per-partition per-peer delta tracking with ACKs
-│   ├── vordb_handoff.erl             # Partition data transfer on ring changes
-│   ├── vordb_membership.erl          # Dynamic cluster membership
-│   ├── vordb_vnode_sup.erl           # Ring-driven dynamic vnode supervisor
-│   ├── vordb_vnode_starter.erl       # Agent start + registry
-│   ├── vordb_registry.erl            # ETS-based process registry
-│   └── vordb_app.erl                 # OTP application + supervision tree
-└── test/
-    ├── *_test.gleam                  # Gleam unit tests (entry, counter, or_set, map_utils)
-    ├── ring_test.gleam               # Ring partitioning + preference list tests
-    ├── dirty_tracker_test.gleam      # DirtyTracker ACK tests
-    ├── storage_test.gleam            # RocksDB round-trip tests
-    ├── kv_store_test.gleam           # Vor agent CRUD + sync tests
-    ├── http_test.gleam               # HTTP endpoint tests (starts mist)
-    ├── cluster_test.gleam            # Multi-instance gossip convergence tests
-    └── property_test.gleam           # CRDT property tests (15 suites)
-```
+A binary TCP protocol (length-prefixed protobuf) is also exposed on `tcp_port` (default 5001) and supports all CRDT operations.
 
 ## Status
 
-**Phase 2 — complete.**
+**Phase 3 — complete. Production-ready.**
 
-- Consistent hashing ring (256 partitions, configurable) with N-way replication
-- Replicated writes via coordinator — any node can handle any request
-- Partition handoff on ring changes — data streams to new owners
-- Ring gossip — periodic + event-driven convergence with persistence
-- Scoped delta gossip — bandwidth proportional to replication factor, not cluster size
-- Three CRDT types: LWW-Register (compile-time verified merge), OR-Set, PN-Counter (property-tested merge)
-- Dynamic cluster membership with ring-driven vnode lifecycle
-- RocksDB persistence with partition-aware key prefixing
-- REST API for all CRDT types plus cluster administration
-- Application layer in Gleam with static types; Vor calls Gleam directly for CRDT ops
-- 69 test functions covering 130+ test cases + 15 property-based suites
+| Phase | Milestone |
+|---|---|
+| Phase 0 | LWW + 3 nodes + REST + RocksDB |
+| Phase 1 | OR-Set, PN-Counter, delta gossip with ACKs, vnode sharding, membership |
+| Phase 2 | Consistent hashing ring, replicated writes, handoff, ring gossip |
+| Phase 3 | ORSWOT, ETS reads, column families, ETS DirtyTracker, protobuf/TCP, telemetry |
 
-Roadmap includes multi-datacenter gossip, TTL, anti-entropy, and read quorums.
+72 tests, 0 failures. CRDT merge correctness verified by 15 property-based suites (commutativity, associativity, idempotency × 3 types).
+
+See [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md) for architecture, request flow, module reference, supervision tree, configuration, and outstanding issues.
 
 ## License
 
