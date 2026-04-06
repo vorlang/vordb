@@ -52,9 +52,14 @@ init([]) ->
           start => {vordb_vnode_sup, start_link, [[{node_id, NodeId}, {sync_interval_ms, SyncInterval}]]},
           restart => permanent, type => supervisor},
 
-        %% Gossip
-        #{id => vordb_gossip,
-          start => {gen_server, start_link, [{local, vordb_gossip}, vordb_gossip_stub, [], []]},
+        %% Handoff manager
+        #{id => vordb_handoff,
+          start => {vordb_handoff, start_link, []},
+          restart => permanent, type => worker},
+
+        %% Ring Gossip — ring distribution across cluster
+        #{id => vordb_ring_gossip,
+          start => {vordb_ring_gossip, start_link, [[{ring_gossip_interval_ms, 5000}]]},
           restart => permanent, type => worker}
     ],
 

@@ -32,6 +32,9 @@
     call_agent/2, cast_agent/2,
     %% Ring
     ring_from_binary/1,
+    %% Storage partition ops (for handoff)
+    storage_iterate_partition/3, storage_delete_partition/1,
+    storage_count_partition_keys/1,
     %% General FFI
     system_time_ms/0, phash2/2,
     node_self/0, node_list/0, node_connect/1, erpc_cast_vnode/3,
@@ -95,6 +98,17 @@ handle_call({get_all_prefix, Prefix}, _From, #{db := Db} = State) ->
     Entries = iterate_prefix(Iter, rocksdb:iterator_move(Iter, first), Prefix, byte_size(Prefix), #{}),
     rocksdb:iterator_close(Iter),
     {reply, Entries, State};
+
+handle_call({delete_partition, Partition}, _From, #{db := Db} = State) ->
+    %% Delete all keys for all types of this partition
+    Types = [<<"lww">>, <<"set">>, <<"counter">>],
+    lists:foreach(fun(Type) ->
+        Prefix = make_prefix(Type, Partition),
+        {ok, Iter} = rocksdb:iterator(Db, []),
+        delete_by_prefix(Db, Iter, rocksdb:iterator_move(Iter, first), Prefix, byte_size(Prefix)),
+        rocksdb:iterator_close(Iter)
+    end, Types),
+    {reply, ok, State};
 
 handle_call({put_all_prefix, Prefix, Entries}, _From, #{db := Db} = State) ->
     Batch = maps:fold(fun(K, V, Acc) ->
@@ -339,6 +353,39 @@ send_type_deltas(Peer, VnodeId, counter, Keys) ->
 
 system_time_ms() -> erlang:system_time(millisecond).
 
+%% Storage partition operations (for handoff)
+
+storage_iterate_partition(Partition, ChunkSize, Callback) ->
+    %% Collect all data for this partition across types
+    Lww = storage_get_all_lww(Partition),
+    Sets = storage_get_all_sets(Partition),
+    Counters = storage_get_all_counters(Partition),
+    AllEntries = maps:to_list(Lww) ++ maps:to_list(Sets) ++ maps:to_list(Counters),
+    send_chunks(AllEntries, ChunkSize, Partition, Callback).
+
+send_chunks([], _ChunkSize, _Partition, _Callback) -> ok;
+send_chunks(Entries, ChunkSize, Partition, Callback) ->
+    {Chunk, Rest} = case length(Entries) > ChunkSize of
+        true -> lists:split(ChunkSize, Entries);
+        false -> {Entries, []}
+    end,
+    %% Build chunk data map per type
+    LwwMap = maps:from_list([{K, V} || {K, V} <- Chunk, is_map(V), maps:is_key(value, V)]),
+    SetMap = maps:from_list([{K, V} || {K, V} <- Chunk, is_tuple(V), element(1, V) =:= or_set_state]),
+    CounterMap = maps:from_list([{K, V} || {K, V} <- Chunk, is_tuple(V), element(1, V) =:= pn_counter]),
+    ChunkData = #{lww => LwwMap, sets => SetMap, counters => CounterMap},
+    Callback(ChunkData),
+    send_chunks(Rest, ChunkSize, Partition, Callback).
+
+storage_delete_partition(Partition) ->
+    gen_server:call(vordb_storage, {delete_partition, Partition}).
+
+storage_count_partition_keys(Partition) ->
+    Lww = storage_get_all_lww(Partition),
+    Sets = storage_get_all_sets(Partition),
+    Counters = storage_get_all_counters(Partition),
+    maps:size(Lww) + maps:size(Sets) + maps:size(Counters).
+
 ring_from_binary(Bin) ->
     try {ok, erlang:binary_to_term(Bin)}
     catch _:_ -> {error, nil}
@@ -373,6 +420,16 @@ registry_start(_Name) ->
 start_kv_store(NodeId, VnodeId, SyncIntervalMs, Name) ->
     Opts = [{node_id, NodeId}, {vnode_id, VnodeId}, {sync_interval_ms, SyncIntervalMs}, {name, Name}],
     'Elixir.Vor.Agent.KvStore':start_link(Opts).
+
+delete_by_prefix(Db, Iter, {ok, Key, _Value}, Prefix, PrefixLen) ->
+    case Key of
+        <<Prefix:PrefixLen/binary, _Rest/binary>> ->
+            rocksdb:delete(Db, Key, []),
+            delete_by_prefix(Db, Iter, rocksdb:iterator_move(Iter, next), Prefix, PrefixLen);
+        _ ->
+            delete_by_prefix(Db, Iter, rocksdb:iterator_move(Iter, next), Prefix, PrefixLen)
+    end;
+delete_by_prefix(_Db, _Iter, {error, invalid_iterator}, _Prefix, _PrefixLen) -> ok.
 
 call_agent(Pid, Message) ->
     gen_server:call(Pid, Message).

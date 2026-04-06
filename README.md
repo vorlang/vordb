@@ -178,23 +178,28 @@ A counter supporting both increment and decrement. Implemented as a pair of G-Co
 
 Merge is property-tested for commutativity, associativity, and idempotency.
 
+## Ring Partitioning
+
+VorDB uses a consistent hashing ring (default 256 partitions) to distribute keys across nodes. Each key maps to a partition via `hash(key) rem ring_size`. Each partition is replicated to N nodes (default 3). The ring determines which nodes hold which partitions.
+
+- Any node can coordinate any request — the coordinator forwards writes to all N replicas
+- Writes succeed if any replica is reachable (AP design — availability over consistency)
+- Adding a node triggers partition handoff — data streams from old owners to new owners
+- The ring itself propagates via gossip (periodic + event-driven)
+
 ## Gossip Protocol
 
-VorDB uses delta-state gossip with ACK-based delivery. Each vnode independently tracks which keys changed since the last sync to each peer. On its gossip interval, a vnode sends only the changed entries (deltas) to its peer vnodes on other nodes. Peers ACK received deltas; unACKed deltas are retried.
+Two gossip layers:
 
-Full-state sync is available as an on-demand operation for node joins and disaster recovery, but is not required for normal operation.
+**Data gossip** — per-vnode delta-state gossip scoped to replica peers. Each vnode sends only changed keys to the other nodes in its partition's preference list. ACK-based delivery with retry. Bandwidth proportional to replication factor, not cluster size.
 
-## Vnode Sharding
+**Ring gossip** — cluster-wide periodic distribution of the ring data structure. Ensures all nodes converge on the same partition ownership. Higher version wins.
 
-Each node divides its keyspace into N vnodes (default 16) using consistent hashing. Each vnode is an independent Vor agent process with its own state, gossip timer, and RocksDB key range. Benefits:
-
-- Multi-core parallelism — operations on different keys run concurrently
-- Failure isolation — a crashed vnode only affects its key range
-- Granular gossip — each vnode tracks and sends only its own changes
+Full-state sync is available on-demand for node joins and disaster recovery.
 
 ## Persistence
 
-RocksDB provides crash recovery. When a vnode starts, its Vor agent's `on :init` handler loads persisted state from RocksDB before accepting any messages — no race window, no stale reads.
+RocksDB provides crash recovery. When a vnode starts, its Vor agent's `on :init` handler loads persisted state from RocksDB before accepting any messages. The ring is persisted to disk and loaded on restart — a restarting node catches up via ring gossip if the ring changed while it was down.
 
 ## Tests
 
@@ -227,21 +232,27 @@ vordb/
 │   │   ├── counter.gleam             # PN-Counter CRDT (typed, pure)
 │   │   ├── serializer.gleam          # Term serialization
 │   │   ├── map_utils.gleam           # Map utilities
+│   │   ├── ring.gleam                # Consistent hashing ring (pure)
 │   │   ├── storage.gleam             # RocksDB typed wrapper
-│   │   ├── vnode_router.gleam        # Consistent hash routing
+│   │   ├── vnode_router.gleam        # Ring-based partition routing
 │   │   ├── cluster.gleam             # Peer discovery
 │   │   ├── gossip.gleam              # Gossip dispatch
 │   │   └── http_router.gleam         # HTTP API (mist)
 │   ├── vordb_ffi.erl                 # Erlang — RocksDB storage gen_server, LWW entry helpers
 │   ├── vordb_http_ffi.erl            # HTTP JSON parsing and response formatting
-│   ├── vordb_dirty_tracker.erl       # Per-vnode per-peer delta tracking with ACKs
+│   ├── vordb_coordinator.erl         # Write coordinator — fans out to N replicas
+│   ├── vordb_ring_manager.erl        # Ring state, persistence, queries
+│   ├── vordb_ring_gossip.erl         # Ring distribution across cluster
+│   ├── vordb_dirty_tracker.erl       # Per-partition per-peer delta tracking with ACKs
+│   ├── vordb_handoff.erl             # Partition data transfer on ring changes
 │   ├── vordb_membership.erl          # Dynamic cluster membership
-│   ├── vordb_vnode_sup.erl           # Vnode supervisor (starts N agents)
+│   ├── vordb_vnode_sup.erl           # Ring-driven dynamic vnode supervisor
 │   ├── vordb_vnode_starter.erl       # Agent start + registry
 │   ├── vordb_registry.erl            # ETS-based process registry
 │   └── vordb_app.erl                 # OTP application + supervision tree
 └── test/
     ├── *_test.gleam                  # Gleam unit tests (entry, counter, or_set, map_utils)
+    ├── ring_test.gleam               # Ring partitioning + preference list tests
     ├── dirty_tracker_test.gleam      # DirtyTracker ACK tests
     ├── storage_test.gleam            # RocksDB round-trip tests
     ├── kv_store_test.gleam           # Vor agent CRUD + sync tests
@@ -252,18 +263,21 @@ vordb/
 
 ## Status
 
-**Phase 1 — complete. Gleam migration — complete.**
+**Phase 2 — complete.**
 
+- Consistent hashing ring (256 partitions, configurable) with N-way replication
+- Replicated writes via coordinator — any node can handle any request
+- Partition handoff on ring changes — data streams to new owners
+- Ring gossip — periodic + event-driven convergence with persistence
+- Scoped delta gossip — bandwidth proportional to replication factor, not cluster size
 - Three CRDT types: LWW-Register (compile-time verified merge), OR-Set, PN-Counter (property-tested merge)
-- Delta-state gossip with ACK-based delivery and per-vnode timers
-- Vnode sharding (16 vnodes per node, consistent hashing)
-- Dynamic cluster membership (join/leave)
-- RocksDB persistence with vnode-aware key prefixing
+- Dynamic cluster membership with ring-driven vnode lifecycle
+- RocksDB persistence with partition-aware key prefixing
 - REST API for all CRDT types plus cluster administration
-- Application layer in Gleam with static types; Vor calls Gleam directly for CRDT ops, Erlang for stateful services
-- 108 test cases + 15 property-based suites
+- Application layer in Gleam with static types; Vor calls Gleam directly for CRDT ops
+- 69 test functions covering 130+ test cases + 15 property-based suites
 
-Roadmap includes consistent hashing ring with partial replication, multi-datacenter gossip, TTL, and anti-entropy.
+Roadmap includes multi-datacenter gossip, TTL, anti-entropy, and read quorums.
 
 ## License
 
