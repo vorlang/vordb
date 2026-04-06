@@ -17,6 +17,7 @@ packages = [
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "mist", version = "6.0.2", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "6B03DEEA38A02F276333CB27B53B16D3D45BD741B89599085A601BAF635F2006" },
   { name = "rocksdb", version = "2.5.0", build_tools = ["rebar3"], requirements = [], otp_app = "rocksdb", source = "hex", outer_checksum = "C3998F61C4077DCD0D1B24B67469279209DAC7A1E9BA2CF6215DDFA331015803" },
+  { name = "telemetry", version = "1.4.1", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "2172E05A27531D3D31DD9782841065C50DD5C3C7699D95266B2EDD54C2DAFA1C" },
 ]
 
 [requirements]
@@ -29,3 +30,4 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 gpb = { version = ">= 4.21.7 and < 5.0.0" }
 mist = { version = ">= 6.0.2 and < 7.0.0" }
 rocksdb = { version = ">= 2.5.0 and < 3.0.0" }
+telemetry = { version = ">= 1.4.1 and < 2.0.0" }

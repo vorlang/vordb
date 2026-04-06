@@ -33,6 +33,8 @@ setup() ->
     lists:foreach(fun(P) -> gen_server:call(vordb_storage, {cf_create, P}) end, lists:seq(0, ?RING_SIZE - 1)),
     vordb_registry:start(),
     vordb_cache:init(),
+    vordb_metrics:init(),
+    catch vordb_metrics:attach_handlers(),
     vordb_dirty_tracker:init(),
     catch gen_server:stop(vordb_ring_manager),
     {ok, _} = vordb_ring_manager:start_link(?RING_SIZE, 3, [<<"test_node">>], <<"test_node">>),

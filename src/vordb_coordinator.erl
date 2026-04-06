@@ -10,6 +10,15 @@
 %% Sends to all replicas. Returns after local (or primary) succeeds.
 
 write(Key, Message) ->
+    Start = erlang:monotonic_time(microsecond),
+    Result = do_write(Key, Message),
+    Duration = erlang:monotonic_time(microsecond) - Start,
+    Op = element(1, Message),
+    Status = case Result of {ok, _} -> ok; _ -> error end,
+    catch vordb_metrics:emit_request(Op, http, Status, Duration),
+    Result.
+
+do_write(Key, Message) ->
     Partition = vordb_ring_manager:key_partition(Key),
     PrefList = vordb_ring_manager:key_nodes(Key),
     IsLocal = vordb_ring_manager:is_local(Partition),
@@ -43,6 +52,15 @@ write(Key, Message) ->
 %% Falls back to gen_server call for unknown message types.
 
 read(Key, Message) ->
+    Start = erlang:monotonic_time(microsecond),
+    Result = do_read(Key, Message),
+    Duration = erlang:monotonic_time(microsecond) - Start,
+    Op = element(1, Message),
+    Status = case Result of {ok, _} -> ok; _ -> error end,
+    catch vordb_metrics:emit_request(Op, http, Status, Duration),
+    Result.
+
+do_read(Key, Message) ->
     Partition = vordb_ring_manager:key_partition(Key),
     IsLocal = vordb_ring_manager:is_local(Partition),
 

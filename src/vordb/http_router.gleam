@@ -89,8 +89,19 @@ pub fn handler(
     Get, ["counter", key] -> handle_counter_value(key, num_vnodes)
     Get, ["status"] -> handle_status(num_vnodes)
     Post, ["admin", "full-sync"] -> handle_full_sync()
+    Get, ["metrics"] -> handle_metrics()
     _, _ -> json_response(404, "{\"error\":\"not_found\"}")
   }
+}
+
+@external(erlang, "vordb_metrics", "format_prometheus")
+fn metrics_text() -> String
+
+fn handle_metrics() -> Response(mist.ResponseData) {
+  let body = metrics_text()
+  response.new(200)
+  |> response.set_header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
 }
 
 fn handle_kv_put(req: Request(Connection), key: String, nv: Int) -> Response(mist.ResponseData) {

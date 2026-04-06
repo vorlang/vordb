@@ -36,6 +36,8 @@ test(Name, Fun) ->
 setup() ->
     vordb_registry:start(),
     vordb_cache:init(),
+    vordb_metrics:init(),
+    catch vordb_metrics:attach_handlers(),
     Dir = <<"/tmp/vordb_cluster_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     catch vordb_ffi:storage_stop(),
     catch gen_server:stop(vordb_dirty_tracker),

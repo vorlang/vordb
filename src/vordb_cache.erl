@@ -74,6 +74,15 @@ load_counters(VnodeId, Entries) ->
 
 %% ===== Coordinator read path =====
 
-get_lww(Partition, Key) -> cache_get(Partition, lww, Key).
-get_set(Partition, Key) -> cache_get(Partition, set, Key).
-get_counter(Partition, Key) -> cache_get(Partition, counter, Key).
+get_lww(Partition, Key) ->
+    R = cache_get(Partition, lww, Key),
+    case R of {ok, _} -> catch vordb_metrics:emit_cache_hit(lww); _ -> catch vordb_metrics:emit_cache_miss(lww) end,
+    R.
+get_set(Partition, Key) ->
+    R = cache_get(Partition, set, Key),
+    case R of {ok, _} -> catch vordb_metrics:emit_cache_hit(set); _ -> catch vordb_metrics:emit_cache_miss(set) end,
+    R.
+get_counter(Partition, Key) ->
+    R = cache_get(Partition, counter, Key),
+    case R of {ok, _} -> catch vordb_metrics:emit_cache_hit(counter); _ -> catch vordb_metrics:emit_cache_miss(counter) end,
+    R.

@@ -73,6 +73,7 @@ prop_lww_preserves_keys() ->
 vor_merge(Base, Incoming) ->
     vordb_registry:start(),
     vordb_cache:init(),
+    vordb_metrics:init(),
     Dir = <<"/tmp/vordb_prop_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     %% Stop any leftover processes
     catch gen_server:stop(vordb_dirty_tracker),

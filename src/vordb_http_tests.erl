@@ -45,8 +45,10 @@ setup() ->
     Dir = <<"/tmp/vordb_http_test_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     catch vordb_ffi:storage_stop(),
     {ok, _} = vordb_ffi:storage_start(Dir),
-    %% Init cache table
+    %% Init cache and metrics
     vordb_cache:init(),
+    vordb_metrics:init(),
+    catch vordb_metrics:attach_handlers(),
     %% Start ring manager — single node owns all partitions
     catch gen_server:stop(vordb_ring_manager),
     {ok, _} = vordb_ring_manager:start_link(?RING_SIZE, ?NVAL, [<<"test_node">>], <<"test_node">>),

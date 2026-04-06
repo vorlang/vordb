@@ -11,6 +11,7 @@ gleam_http = ">= 4.3.0 and < 5.0.0"
 mist = ">= 6.0.2 and < 7.0.0"
 rocksdb = ">= 2.5.0 and < 3.0.0"
 gpb = ">= 4.21.7 and < 5.0.0"
+telemetry = ">= 1.4.1 and < 2.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
