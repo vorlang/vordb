@@ -1,0 +1,123 @@
+syntax = "proto3";
+package vordb;
+
+// CRDT state schemas (RocksDB storage format)
+
+message LwwEntry {
+  bytes value = 1;
+  int64 timestamp = 2;
+  string node_id = 3;
+  bool is_tombstone = 4;
+}
+
+message OrswotDots {
+  map<string, int64> dots = 1;
+}
+
+message OrswotState {
+  map<string, OrswotDots> entries = 1;
+  map<string, int64> clock = 2;
+}
+
+message PnCounter {
+  map<string, int64> p = 1;
+  map<string, int64> n = 2;
+}
+
+// Client protocol
+
+message Request {
+  uint32 request_id = 1;
+  oneof body {
+    PutRequest put = 10;
+    GetRequest get = 11;
+    DeleteRequest delete = 12;
+    SetAddRequest set_add = 20;
+    SetRemoveRequest set_remove = 21;
+    SetMembersRequest set_members = 22;
+    CounterIncrementRequest counter_increment = 30;
+    CounterDecrementRequest counter_decrement = 31;
+    CounterValueRequest counter_value = 32;
+  }
+}
+
+message Response {
+  uint32 request_id = 1;
+  oneof body {
+    OkResponse ok = 10;
+    ValueResponse value = 11;
+    NotFoundResponse not_found = 12;
+    SetMembersResponse set_members = 20;
+    CounterValueResponse counter_value = 30;
+    ErrorResponse error = 50;
+  }
+}
+
+message PutRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message OkResponse {
+  int64 timestamp = 1;
+}
+
+message ValueResponse {
+  string key = 1;
+  bytes value = 2;
+}
+
+message NotFoundResponse {
+  string key = 1;
+}
+
+message SetAddRequest {
+  string key = 1;
+  string element = 2;
+}
+
+message SetRemoveRequest {
+  string key = 1;
+  string element = 2;
+}
+
+message SetMembersRequest {
+  string key = 1;
+}
+
+message SetMembersResponse {
+  string key = 1;
+  repeated string members = 2;
+}
+
+message CounterIncrementRequest {
+  string key = 1;
+  int64 amount = 2;
+}
+
+message CounterDecrementRequest {
+  string key = 1;
+  int64 amount = 2;
+}
+
+message CounterValueRequest {
+  string key = 1;
+}
+
+message CounterValueResponse {
+  string key = 1;
+  int64 value = 2;
+}
+
+message ErrorResponse {
+  string message = 1;
+  string code = 2;
+}
