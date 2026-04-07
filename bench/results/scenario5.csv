@@ -1,0 +1,4 @@
+crdt_type,write_op,read_op,write_per_sec,read_per_sec,write_p50,write_p99,read_p50,read_p99
+lww,put,get,9293,9340,465,8684,77,174
+set,set_add,set_members,5105,4054,967,43334,229,509
+counter,increment,value,8245,8733,472,8905,80,177

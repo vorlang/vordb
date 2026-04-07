@@ -6,6 +6,9 @@ directions/
 # Data
 /data/
 
+# Bench build artifacts (ebin only — keep src + Makefile + results)
+/bench/ebin/
+
 # Crash dumps
 erl_crash.dump
 

@@ -15,7 +15,8 @@ VorDB is a distributed database where:
 - The coordination layer is formally verified at compile time via Vor
 - Data is partitioned across nodes via a consistent hashing ring
 - Each key is replicated to N nodes for fault tolerance
-- The system is eventually consistent — availability is prioritized over immediate consistency
+- Writes fan out synchronously to all replicas at request time; convergence is typically ~2 ms across a 3-node loopback cluster (see [PERFORMANCE.md](./PERFORMANCE.md)). Gossip is the safety net that catches up replicas when a fan-out is dropped or a node was unreachable, not the primary replication path.
+- Availability is prioritized over immediate consistency: a write succeeds as soon as the local (or primary) replica acknowledges; remote replicas are reconciled by fan-out cast and, if needed, by gossip.
 
 VorDB is the spiritual successor to Riak. Riak proved that CRDT-based distributed storage on the BEAM works at production scale. VorDB adds what Riak never had: compile-time verification of the coordination layer.
 
@@ -76,11 +77,11 @@ Client
 2. Coordinator computes partition: `hash(key) rem 256`
 3. Coordinator looks up preference list from ring: N nodes that hold this key
 4. If this node is a replica: synchronous local write to Vor agent
-5. Fan out async writes to remaining N-1 replica nodes
+5. Fan out to remaining N-1 replicas via `erpc:cast` over Erlang distribution. The casts go out before the client response — they are **the actual replication mechanism**, not gossip. On a healthy cluster, replicas receive the write within ~1 ms of the local commit.
 6. Vor agent processes write: creates LWW entry with timestamp, transitions state
 7. Agent persists to RocksDB (column family for this partition)
 8. Agent writes through to ETS cache
-9. Agent marks key dirty in ETS DirtyTracker for gossip
+9. Agent marks key dirty in ETS DirtyTracker. If the fan-out cast was delivered (the common case) the key will be cleared from the dirty set on the next ACK. The dirty mark exists so gossip can catch up replicas that missed the cast.
 10. Response returned to client after local (or primary) write succeeds
 
 ### Request Flow — Read
@@ -94,14 +95,18 @@ Client
 
 ### Gossip Flow
 
+Gossip is the **safety net** that catches up replicas which missed a fan-out cast. On a healthy cluster, fan-out delivers the write to all replicas within ~1 ms; gossip's job is the long tail — node was unreachable, cast was dropped, message queue was overloaded, agent crashed and restarted from disk and is now stale. Gossip is *not* on the steady-state hot path.
+
 1. Each vnode's Vor agent fires its `every sync_interval_ms` timer
 2. Timer calls gossip extern: `send_vnode_deltas(partition, node_id)`
-3. Gossip module queries ETS DirtyTracker: which keys changed for each replica peer?
+3. Gossip module queries ETS DirtyTracker: which keys are still dirty (un-ACKed) for each replica peer?
 4. For each peer with dirty keys: fetch entries from Vor agent, send delta via Erlang distribution
 5. Receiving vnode's Vor agent processes `{:lww_sync, ...}` (or set/counter sync): merges via CRDT
 6. Agent persists merged state, updates ETS cache, marks dirty for further propagation
 7. Peer sends ACK; sender clears confirmed dirty entries
 8. Unacknowledged deltas retry on next gossip tick
+
+This means `sync_interval_ms` controls **how fast missed fan-outs are reconciled**, not how fast typical writes propagate. Lowering it speeds up convergence after failures; raising it reduces background bandwidth. Measured convergence on a 3-node loopback cluster is ~2 ms p99 across 500 ms / 1000 ms / 2000 ms intervals — flat, because almost no writes need gossip to converge. See [PERFORMANCE.md](./PERFORMANCE.md) for the full numbers.
 
 ### Ring Change Flow
 

@@ -30,15 +30,18 @@ attach_handlers() ->
     telemetry:attach(<<"vordb.request.stop">>,
         [vordb, request, stop],
         fun handle_request_stop/4, #{}),
+    %% Pass the precomputed atom name in Config so the handler doesn't rebuild
+    %% it on every event (the old `list_to_atom(lists:flatten(...))` path was
+    %% the dominant `lists:do_flatten/2` source in eprof).
     telemetry:attach(<<"vordb.cache.hit">>,
         [vordb, cache, hit],
-        fun handle_counter_event/4, #{}),
+        fun handle_counter_event/4, #{name => vordb_cache_hit}),
     telemetry:attach(<<"vordb.cache.miss">>,
         [vordb, cache, miss],
-        fun handle_counter_event/4, #{}),
+        fun handle_counter_event/4, #{name => vordb_cache_miss}),
     telemetry:attach(<<"vordb.gossip.delta.sent">>,
         [vordb, gossip, delta, sent],
-        fun handle_counter_event/4, #{}),
+        fun handle_counter_event/4, #{name => vordb_gossip_delta_sent}),
     ok.
 
 handle_request_stop(_Event, #{duration := Duration}, #{operation := Op, protocol := Proto, status := Status}, _Config) ->
@@ -48,9 +51,7 @@ handle_request_stop(_Event, #{duration := Duration}, #{operation := Op, protocol
     Buckets = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000],
     record_histogram({request_duration, Op, Status}, Duration, Buckets).
 
-handle_counter_event(Event, #{count := N}, Meta, _Config) ->
-    %% Derive counter name from event path
-    Name = list_to_atom(lists:flatten(lists:join("_", [atom_to_list(E) || E <- Event]))),
+handle_counter_event(_Event, #{count := N}, Meta, #{name := Name}) ->
     Tags = maps:to_list(Meta),
     inc_counter({Name, Tags}, N).
 

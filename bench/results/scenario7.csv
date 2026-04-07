@@ -1,0 +1,4 @@
+sync_interval_ms,samples,timeouts,p50_ms,p95_ms,p99_ms,max_ms,mean_ms
+500,200,0,2,2,2,7,2
+1000,200,0,2,2,2,8,2
+2000,200,0,2,2,2,7,2

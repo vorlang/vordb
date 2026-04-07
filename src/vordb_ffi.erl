@@ -2,6 +2,14 @@
 
 %% Vor agent extern bridge — all Vor extern calls route through here.
 %% Storage lifecycle managed via a named gen_server (vordb_storage).
+%%
+%% NOTE: storage operations are routed through the gen_server intentionally.
+%% A persistent_term + direct-rocksdb experiment (see git history) measured
+%% an 18-36% throughput regression at 10+ concurrent clients because RocksDB's
+%% internal WAL/memtable mutexes contended badly under fan-out. The gen_server
+%% acts as an orderly serialization point that protects RocksDB from internal
+%% lock contention. See SCALING_DEBT SCALE-005 for the full write-throughput
+%% picture.
 
 -behaviour(gen_server).
 -export([
