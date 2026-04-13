@@ -1,0 +1,35 @@
+%% VorDB KvCluster — 3-vnode system block for model checking and chaos simulation.
+%%
+%% Full-replication topology: each vnode can exchange lww/set/counter sync
+%% messages with every other vnode. With ring_size=3 and N=3, this models
+%% the same partition-per-node layout that our benchmark convergence scenario
+%% measures on real hardware.
+
+system KvCluster do
+  agent :v1, KvStore(node_id: :node1, vnode_id: 0, sync_interval_ms: 5000)
+  agent :v2, KvStore(node_id: :node2, vnode_id: 1, sync_interval_ms: 5000)
+  agent :v3, KvStore(node_id: :node3, vnode_id: 2, sync_interval_ms: 5000)
+
+  connect :v1 -> :v2
+  connect :v1 -> :v3
+  connect :v2 -> :v1
+  connect :v2 -> :v3
+  connect :v3 -> :v1
+  connect :v3 -> :v2
+
+  %% Safety invariant: lww_store is always a map (never crashes to an error
+  %% sentinel). This exercises the model checker on VorDB's state space even
+  %% though the deep CRDT merge correctness lives behind Gleam externs.
+  safety "lww_store is always a map" proven do
+    for_all agents, lww_store != :error
+  end
+
+  %% Safety invariant: set_store and counter_store also stay valid.
+  safety "set_store is always a map" proven do
+    for_all agents, set_store != :error
+  end
+
+  safety "counter_store is always a map" proven do
+    for_all agents, counter_store != :error
+  end
+end

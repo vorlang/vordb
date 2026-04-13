@@ -6,7 +6,7 @@
 
 agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
 
-  state lww_store: map
+  state lww_store: map sensitive
   state set_store: map
   state counter_store: map
 
@@ -77,8 +77,8 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:set_members, key: binary, members: list}
     emits {:set_not_found, key: binary}
 
-    accepts {:counter_increment, key: binary, amount: integer}
-    accepts {:counter_decrement, key: binary, amount: integer}
+    accepts {:counter_increment, key: binary, amount: integer} where amount > 0
+    accepts {:counter_decrement, key: binary, amount: integer} where amount > 0
     accepts {:counter_value, key: binary}
     accepts {:counter_sync, remote_counter_store: map}
 
