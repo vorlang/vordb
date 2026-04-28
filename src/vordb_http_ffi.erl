@@ -10,7 +10,8 @@
     format_counter_value_response/2,
     is_not_found/1,
     %% Bucket support
-    make_bucket_config/4,
+    make_bucket_config/4, make_bucket_config/6,
+    resolve_consistency_preset/1,
     make_bucket_params_put/2,
     make_bucket_params_key/1,
     make_bucket_params_element/2,
@@ -110,6 +111,9 @@ make_atom(S) when is_list(S) -> list_to_atom(S);
 make_atom(A) when is_atom(A) -> A.
 
 make_bucket_config(Name, TypeStr, Ttl, N) ->
+    make_bucket_config(Name, TypeStr, Ttl, N, 0, 0).
+
+make_bucket_config(Name, TypeStr, Ttl, N, W, R) ->
     Type = case TypeStr of
         <<"lww">> -> lww;
         <<"orswot">> -> orswot;
@@ -117,7 +121,17 @@ make_bucket_config(Name, TypeStr, Ttl, N) ->
         _ -> lww
     end,
     #{name => Name, crdt_type => Type, ttl_seconds => Ttl,
-      replication_n => N, created_at => erlang:system_time(millisecond)}.
+      replication_n => N, write_quorum => W, read_quorum => R,
+      created_at => erlang:system_time(millisecond)}.
+
+resolve_consistency_preset(Preset) ->
+    case Preset of
+        <<"eventual">>   -> {1, 1};
+        <<"session">>    -> {2, 1};
+        <<"consistent">> -> {2, 2};
+        <<"paranoid">>   -> {3, 3};
+        _ -> {0, 0}
+    end.
 
 make_bucket_params_put(Key, Value) ->
     #{key => Key, value => Value}.
@@ -136,9 +150,12 @@ format_bucket_response({ok, Bucket}) when is_map(Bucket) ->
     Type = atom_to_binary(maps:get(crdt_type, Bucket, lww)),
     Ttl = integer_to_binary(maps:get(ttl_seconds, Bucket, 0)),
     N = integer_to_binary(maps:get(replication_n, Bucket, 0)),
+    W = integer_to_binary(maps:get(write_quorum, Bucket, 0)),
+    R = integer_to_binary(maps:get(read_quorum, Bucket, 0)),
     iolist_to_binary([
         <<"{\"name\":\"">>, Name, <<"\",\"type\":\"">>, Type,
-        <<"\",\"ttl_seconds\":">>, Ttl, <<",\"replication_n\":">>, N, <<"}">>
+        <<"\",\"ttl_seconds\":">>, Ttl, <<",\"replication_n\":">>, N,
+        <<",\"write_quorum\":">>, W, <<",\"read_quorum\":">>, R, <<"}">>
     ]);
 format_bucket_response(_) -> <<"{\"error\":\"bucket_not_found\"}">>.
 

@@ -84,11 +84,14 @@ handle_call(ensure_defaults, _From, #{buckets := Buckets} = State) ->
     Now = erlang:system_time(millisecond),
     Defaults = [
         {?DEFAULT_LWW, #{name => ?DEFAULT_LWW, crdt_type => lww,
-                          ttl_seconds => 0, replication_n => 0, created_at => Now}},
+                          ttl_seconds => 0, replication_n => 0,
+                          write_quorum => 0, read_quorum => 0, created_at => Now}},
         {?DEFAULT_SET, #{name => ?DEFAULT_SET, crdt_type => orswot,
-                          ttl_seconds => 0, replication_n => 0, created_at => Now}},
+                          ttl_seconds => 0, replication_n => 0,
+                          write_quorum => 0, read_quorum => 0, created_at => Now}},
         {?DEFAULT_COUNTER, #{name => ?DEFAULT_COUNTER, crdt_type => pn_counter,
-                              ttl_seconds => 0, replication_n => 0, created_at => Now}}
+                              ttl_seconds => 0, replication_n => 0,
+                              write_quorum => 0, read_quorum => 0, created_at => Now}}
     ],
     NewBuckets = lists:foldl(fun({Name, Config}, Acc) ->
         case maps:is_key(Name, Acc) of

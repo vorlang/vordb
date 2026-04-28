@@ -45,13 +45,15 @@ pub type CrdtType {
   CrdtPnCounter
 }
 
-/// Bucket — a named collection with per-bucket CRDT type, TTL, and replication.
+/// Bucket — a named collection with per-bucket CRDT type, TTL, replication, and quorum.
 pub type Bucket {
   Bucket(
     name: String,
     crdt_type: CrdtType,
     ttl_seconds: Int,       // 0 = no expiration
     replication_n: Int,     // 0 = use cluster default
+    write_quorum: Int,      // 0 = use cluster default (1)
+    read_quorum: Int,       // 0 = use cluster default (1)
     created_at: Int,
   )
 }

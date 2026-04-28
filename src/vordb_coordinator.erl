@@ -215,7 +215,17 @@ bucket_write(BucketName, Op, Params) ->
                     FullKey = <<BucketName/binary, ":", Key/binary>>,
                     TTL = maps:get(ttl_seconds, Bucket, 0),
                     Message = build_message(Op, FullKey, Params#{ttl_seconds => TTL}),
-                    write(FullKey, Message);
+                    W = maps:get(write_quorum, Bucket, 0),
+                    case W > 1 of
+                        true ->
+                            %% Quorum write — parallel fan-out, collect W ACKs
+                            Partition = vordb_ring_manager:key_partition(FullKey),
+                            Replicas = vordb_ring_manager:key_nodes(FullKey),
+                            vordb_quorum:quorum_write(Partition, Message, Replicas, W);
+                        false ->
+                            %% W=1 or default — fast path (no regression)
+                            write(FullKey, Message)
+                    end;
                 {error, _} = Err -> Err
             end
     end.
@@ -228,8 +238,19 @@ bucket_read(BucketName, Params) ->
             Type = maps:get(crdt_type, Bucket),
             Key = maps:get(key, Params),
             FullKey = <<BucketName/binary, ":", Key/binary>>,
-            Message = build_read_message(Type, FullKey),
-            read(FullKey, Message)
+            R = maps:get(read_quorum, Bucket, 0),
+            case R > 1 of
+                true ->
+                    %% Quorum read — parallel reads, merge, read repair
+                    Partition = vordb_ring_manager:key_partition(FullKey),
+                    Replicas = vordb_ring_manager:key_nodes(FullKey),
+                    TTLExp = vordb_cache:get_ttl(Partition, Type, FullKey),
+                    vordb_quorum:quorum_read(Partition, FullKey, Type, Replicas, R, TTLExp);
+                false ->
+                    %% R=1 or default — ETS fast path (no regression)
+                    Message = build_read_message(Type, FullKey),
+                    read(FullKey, Message)
+            end
     end.
 
 validate_op(lww, put) -> ok;

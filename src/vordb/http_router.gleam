@@ -284,7 +284,15 @@ fn handle_bucket_create(req: Request(Connection)) -> Response(mist.ResponseData)
           let type_str = case json_get_string(body, "type") { Ok(t) -> t Error(_) -> "lww" }
           let ttl = json_get_int(body, "ttl_seconds", 0)
           let n = json_get_int(body, "replication_n", 0)
-          let config = make_bucket_config(name, type_str, ttl, n)
+          // Check for consistency preset or explicit W/R
+          let #(w, r) = case json_get_string(body, "consistency") {
+            Ok(preset) -> resolve_preset(preset)
+            Error(_) -> #(
+              json_get_int(body, "write_quorum", 0),
+              json_get_int(body, "read_quorum", 0),
+            )
+          }
+          let config = make_bucket_config_full(name, type_str, ttl, n, w, r)
           let result = bucket_create(config)
           case is_bucket_error(result) {
             True -> json_response(409, format_bucket_error(result))
@@ -297,6 +305,12 @@ fn handle_bucket_create(req: Request(Connection)) -> Response(mist.ResponseData)
     Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
   }
 }
+
+@external(erlang, "vordb_http_ffi", "make_bucket_config")
+fn make_bucket_config_full(name: String, type_str: String, ttl: Int, n: Int, w: Int, r: Int) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "resolve_consistency_preset")
+fn resolve_preset(preset: String) -> #(Int, Int)
 
 fn handle_bucket_list() -> Response(mist.ResponseData) {
   let buckets = bucket_list()
