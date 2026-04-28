@@ -66,8 +66,41 @@ fn coordinator_write(key: String, message: Dynamic) -> Result(Dynamic, Dynamic)
 @external(erlang, "vordb_coordinator", "read")
 fn coordinator_read(key: String, message: Dynamic) -> Result(Dynamic, Dynamic)
 
+@external(erlang, "vordb_coordinator", "bucket_write")
+fn coord_bucket_write(bucket: String, op: Dynamic, params: Dynamic) -> Result(Dynamic, Dynamic)
+
+@external(erlang, "vordb_coordinator", "bucket_read")
+fn coord_bucket_read(bucket: String, params: Dynamic) -> Result(Dynamic, Dynamic)
+
 @external(erlang, "vordb_http_ffi", "is_not_found")
 fn is_not_found(agent_resp: Dynamic) -> Bool
+
+@external(erlang, "vordb_bucket_registry", "create_bucket")
+fn bucket_create(config: Dynamic) -> Dynamic
+
+@external(erlang, "vordb_bucket_registry", "get_bucket")
+fn bucket_get(name: String) -> Dynamic
+
+@external(erlang, "vordb_bucket_registry", "list_buckets")
+fn bucket_list() -> Dynamic
+
+@external(erlang, "vordb_bucket_registry", "delete_bucket")
+fn bucket_delete(name: String) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "format_bucket_response")
+fn format_bucket_response(result: Dynamic) -> String
+
+@external(erlang, "vordb_http_ffi", "format_bucket_list_response")
+fn format_bucket_list_response(buckets: Dynamic) -> String
+
+@external(erlang, "vordb_http_ffi", "format_bucket_error")
+fn format_bucket_error(err: Dynamic) -> String
+
+@external(erlang, "vordb_http_ffi", "is_bucket_error")
+fn is_bucket_error(result: Dynamic) -> Bool
+
+@external(erlang, "vordb_http_ffi", "make_atom")
+fn make_atom(s: String) -> Dynamic
 
 /// Build the HTTP handler for mist.
 pub fn handler(
@@ -78,6 +111,22 @@ pub fn handler(
   let method = req.method
 
   case method, path_segments {
+    // Bucket management
+    Post, ["buckets"] -> handle_bucket_create(req)
+    Get, ["buckets"] -> handle_bucket_list()
+    Get, ["buckets", name] -> handle_bucket_get(name)
+    Delete, ["buckets", name] -> handle_bucket_delete(name)
+
+    // Unified bucket data operations
+    Put, ["bucket", bucket, key] -> handle_bucket_put(req, bucket, key)
+    Get, ["bucket", bucket, key] -> handle_bucket_read(bucket, key)
+    Delete, ["bucket", bucket, key] -> handle_bucket_del(bucket, key)
+    Post, ["bucket", bucket, key, "add"] -> handle_bucket_set_add(req, bucket, key)
+    Post, ["bucket", bucket, key, "remove"] -> handle_bucket_set_remove(req, bucket, key)
+    Post, ["bucket", bucket, key, "increment"] -> handle_bucket_counter_inc(req, bucket, key)
+    Post, ["bucket", bucket, key, "decrement"] -> handle_bucket_counter_dec(req, bucket, key)
+
+    // Legacy type-specific endpoints (route to default buckets)
     Put, ["kv", key] -> handle_kv_put(req, key, num_vnodes)
     Get, ["kv", key] -> handle_kv_get(key, num_vnodes)
     Delete, ["kv", key] -> handle_kv_delete(key, num_vnodes)
@@ -87,6 +136,7 @@ pub fn handler(
     Post, ["counter", key, "increment"] -> handle_counter_inc(req, key, num_vnodes)
     Post, ["counter", key, "decrement"] -> handle_counter_dec(req, key, num_vnodes)
     Get, ["counter", key] -> handle_counter_value(key, num_vnodes)
+
     Get, ["status"] -> handle_status(num_vnodes)
     Post, ["admin", "full-sync"] -> handle_full_sync()
     Get, ["metrics"] -> handle_metrics()
@@ -222,6 +272,189 @@ fn handle_counter_value(key: String, nv: Int) -> Response(mist.ResponseData) {
     Error(_) -> json_response(500, "{\"error\":\"internal_error\"}")
   }
 }
+
+// ===== Bucket management handlers =====
+
+fn handle_bucket_create(req: Request(Connection)) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      case json_get_string(body, "name") {
+        Ok(name) -> {
+          let type_str = case json_get_string(body, "type") { Ok(t) -> t Error(_) -> "lww" }
+          let ttl = json_get_int(body, "ttl_seconds", 0)
+          let n = json_get_int(body, "replication_n", 0)
+          let config = make_bucket_config(name, type_str, ttl, n)
+          let result = bucket_create(config)
+          case is_bucket_error(result) {
+            True -> json_response(409, format_bucket_error(result))
+            False -> json_response(201, "{\"ok\":true,\"bucket\":\"" <> name <> "\"}")
+          }
+        }
+        Error(_) -> json_response(400, "{\"error\":\"missing name\"}")
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn handle_bucket_list() -> Response(mist.ResponseData) {
+  let buckets = bucket_list()
+  json_response(200, format_bucket_list_response(buckets))
+}
+
+fn handle_bucket_get(name: String) -> Response(mist.ResponseData) {
+  let result = bucket_get(name)
+  case is_bucket_error(result) {
+    True -> json_response(404, "{\"error\":\"bucket_not_found\",\"bucket\":\"" <> name <> "\"}")
+    False -> json_response(200, format_bucket_response(result))
+  }
+}
+
+fn handle_bucket_delete(name: String) -> Response(mist.ResponseData) {
+  let result = bucket_delete(name)
+  case is_bucket_error(result) {
+    True -> json_response(404, "{\"error\":\"bucket_not_found\",\"bucket\":\"" <> name <> "\"}")
+    False -> json_response(200, "{\"ok\":true,\"deleted\":\"" <> name <> "\"}")
+  }
+}
+
+// ===== Unified bucket data handlers =====
+
+fn handle_bucket_put(req: Request(Connection), bucket: String, key: String) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      case json_get_string(body, "value") {
+        Ok(value) -> {
+          let params = make_bucket_params_put(key, value)
+          case coord_bucket_write(bucket, make_atom("put"), params) {
+            Ok(resp) -> json_response(200, format_kv_put_response(key, resp))
+            Error(err) -> bucket_write_error(err)
+          }
+        }
+        Error(_) -> json_response(400, "{\"error\":\"missing value\"}")
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn handle_bucket_read(bucket: String, key: String) -> Response(mist.ResponseData) {
+  let params = make_bucket_params_key(key)
+  case coord_bucket_read(bucket, params) {
+    Ok(resp) ->
+      case is_not_found(resp) {
+        True -> json_response(404, "{\"error\":\"not_found\",\"key\":\"" <> key <> "\"}")
+        False -> json_response(200, format_bucket_read_response(key, resp))
+      }
+    Error(err) -> bucket_read_error(err)
+  }
+}
+
+fn handle_bucket_del(bucket: String, key: String) -> Response(mist.ResponseData) {
+  let params = make_bucket_params_key(key)
+  case coord_bucket_write(bucket, make_atom("delete"), params) {
+    Ok(resp) -> json_response(200, format_kv_delete_response(key, resp))
+    Error(err) -> bucket_write_error(err)
+  }
+}
+
+fn handle_bucket_set_add(req: Request(Connection), bucket: String, key: String) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      case json_get_string(body, "element") {
+        Ok(element) -> {
+          let params = make_bucket_params_element(key, element)
+          case coord_bucket_write(bucket, make_atom("set_add"), params) {
+            Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
+            Error(err) -> bucket_write_error(err)
+          }
+        }
+        Error(_) -> json_response(400, "{\"error\":\"missing element\"}")
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn handle_bucket_set_remove(req: Request(Connection), bucket: String, key: String) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      case json_get_string(body, "element") {
+        Ok(element) -> {
+          let params = make_bucket_params_element(key, element)
+          case coord_bucket_write(bucket, make_atom("set_remove"), params) {
+            Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
+            Error(err) -> bucket_write_error(err)
+          }
+        }
+        Error(_) -> json_response(400, "{\"error\":\"missing element\"}")
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn handle_bucket_counter_inc(req: Request(Connection), bucket: String, key: String) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      let amount = json_get_int(body, "amount", 1)
+      let params = make_bucket_params_amount(key, amount)
+      case coord_bucket_write(bucket, make_atom("counter_increment"), params) {
+        Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
+        Error(err) -> bucket_write_error(err)
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn handle_bucket_counter_dec(req: Request(Connection), bucket: String, key: String) -> Response(mist.ResponseData) {
+  case mist.read_body(req, 1_000_000) {
+    Ok(r) -> {
+      let body = parse_json_body(r.body)
+      let amount = json_get_int(body, "amount", 1)
+      let params = make_bucket_params_amount(key, amount)
+      case coord_bucket_write(bucket, make_atom("counter_decrement"), params) {
+        Ok(_) -> json_response(200, "{\"ok\":true,\"key\":\"" <> key <> "\"}")
+        Error(err) -> bucket_write_error(err)
+      }
+    }
+    Error(_) -> json_response(400, "{\"error\":\"bad request\"}")
+  }
+}
+
+fn bucket_write_error(err: Dynamic) -> Response(mist.ResponseData) {
+  let msg = format_bucket_error(err)
+  json_response(400, msg)
+}
+
+fn bucket_read_error(err: Dynamic) -> Response(mist.ResponseData) {
+  let msg = format_bucket_error(err)
+  json_response(404, msg)
+}
+
+@external(erlang, "vordb_http_ffi", "make_bucket_config")
+fn make_bucket_config(name: String, type_str: String, ttl: Int, n: Int) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "make_bucket_params_put")
+fn make_bucket_params_put(key: String, value: String) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "make_bucket_params_key")
+fn make_bucket_params_key(key: String) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "make_bucket_params_element")
+fn make_bucket_params_element(key: String, element: String) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "make_bucket_params_amount")
+fn make_bucket_params_amount(key: String, amount: Int) -> Dynamic
+
+@external(erlang, "vordb_http_ffi", "format_bucket_read_response")
+fn format_bucket_read_response(key: String, resp: Dynamic) -> String
 
 fn handle_status(num_vnodes: Int) -> Response(mist.ResponseData) {
   let body = json.to_string(json.object([

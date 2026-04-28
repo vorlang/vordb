@@ -43,6 +43,8 @@
     %% Storage partition ops (for handoff)
     storage_iterate_partition/3, storage_delete_partition/1,
     storage_count_partition_keys/1,
+    %% TTL
+    compute_expires_at/2,
     %% General FFI
     system_time_ms/0, phash2/2,
     node_self/0, node_list/0, node_connect/1, erpc_cast_vnode/3,
@@ -265,10 +267,12 @@ storage_put_all_counters(VnodeId, Entries) ->
 %% ===== Entry helpers =====
 
 entry_new(Value, Timestamp, NodeId) ->
-    #{value => Value, timestamp => Timestamp, node_id => NodeId}.
+    #{value => Value, timestamp => Timestamp, node_id => NodeId,
+      expires_at => 0}.
 
 entry_tombstone(Timestamp, NodeId) ->
-    #{value => '__tombstone__', timestamp => Timestamp, node_id => NodeId}.
+    #{value => '__tombstone__', timestamp => Timestamp, node_id => NodeId,
+      expires_at => 0}.
 
 entry_lookup(Store, Key) ->
     case maps:get(Key, Store, not_found) of
@@ -458,6 +462,11 @@ ring_from_binary(Bin) ->
 
 phash2(Key, Range) -> erlang:phash2(Key, Range).
 
+compute_expires_at(_Timestamp, 0) -> 0;  %% 0 = no expiration
+compute_expires_at(Timestamp, TtlSeconds) when TtlSeconds > 0 ->
+    Timestamp + (TtlSeconds * 1000);
+compute_expires_at(_Timestamp, _) -> 0.
+
 node_self() -> node().
 node_list() -> nodes().
 
@@ -504,14 +513,14 @@ cast_agent(Pid, Message) ->
 
 %% ===== Vor Message Constructors (for Gleam public API) =====
 
-make_put_msg(Key, Value) -> {put, #{key => Key, value => Value}}.
+make_put_msg(Key, Value) -> {put, #{key => Key, value => Value, ttl_seconds => 0}}.
 make_get_msg(Key) -> {get, #{key => Key}}.
-make_delete_msg(Key) -> {delete, #{key => Key}}.
-make_set_add_msg(Key, Element) -> {set_add, #{key => Key, element => Element}}.
-make_set_remove_msg(Key, Element) -> {set_remove, #{key => Key, element => Element}}.
+make_delete_msg(Key) -> {delete, #{key => Key, ttl_seconds => 0}}.
+make_set_add_msg(Key, Element) -> {set_add, #{key => Key, element => Element, ttl_seconds => 0}}.
+make_set_remove_msg(Key, Element) -> {set_remove, #{key => Key, element => Element, ttl_seconds => 0}}.
 make_set_members_msg(Key) -> {set_members, #{key => Key}}.
-make_counter_increment_msg(Key, Amount) -> {counter_increment, #{key => Key, amount => Amount}}.
-make_counter_decrement_msg(Key, Amount) -> {counter_decrement, #{key => Key, amount => Amount}}.
+make_counter_increment_msg(Key, Amount) -> {counter_increment, #{key => Key, amount => Amount, ttl_seconds => 0}}.
+make_counter_decrement_msg(Key, Amount) -> {counter_decrement, #{key => Key, amount => Amount, ttl_seconds => 0}}.
 make_counter_value_msg(Key) -> {counter_value, #{key => Key}}.
 make_get_stores_msg() -> {get_stores, #{}}.
 

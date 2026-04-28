@@ -1,8 +1,12 @@
 -module(vordb_coordinator).
--export([write/2, read/2]).
+-export([write/2, read/2, bucket_write/3, bucket_read/2]).
 
 %% Coordinator — routes writes to all N replicas, reads from ETS cache.
 %% Not a process — runs in the caller's process (HTTP handler).
+%%
+%% bucket_write/3 and bucket_read/2 add bucket awareness: they look up the
+%% bucket config (persistent_term — no IPC), prefix the key with the bucket
+%% name, validate the operation type, and delegate to the existing write/read.
 
 -define(REMOTE_TIMEOUT, 5000).
 
@@ -80,30 +84,42 @@ read_local(Partition, Key, Message) ->
         {lww, K} ->
             case vordb_cache:get_lww(Partition, K) of
                 {ok, Entry} ->
-                    case is_lww_tombstone(Entry) of
+                    case is_expired_lww(Entry) of
                         true -> {ok, {value, #{key => K, val => none, found => false}}};
                         false ->
-                            Val = extract_lww_value(Entry),
-                            {ok, {value, #{key => K, val => Val, found => true}}}
+                            case is_lww_tombstone(Entry) of
+                                true -> {ok, {value, #{key => K, val => none, found => false}}};
+                                false ->
+                                    Val = extract_lww_value(Entry),
+                                    {ok, {value, #{key => K, val => Val, found => true}}}
+                            end
                     end;
                 {error, _} ->
                     {ok, {value, #{key => Key, val => none, found => false}}}
             end;
         {set_members, K} ->
-            case vordb_cache:get_set(Partition, K) of
-                {ok, SetState} ->
-                    Members = 'vordb@or_set':read_elements(SetState),
-                    {ok, {set_members, #{key => K, members => Members}}};
-                {error, _} ->
-                    {ok, {set_not_found, #{key => K}}}
+            case is_expired_ttl(Partition, set, K) of
+                true -> {ok, {set_not_found, #{key => K}}};
+                false ->
+                    case vordb_cache:get_set(Partition, K) of
+                        {ok, SetState} ->
+                            Members = 'vordb@or_set':read_elements(SetState),
+                            {ok, {set_members, #{key => K, members => Members}}};
+                        {error, _} ->
+                            {ok, {set_not_found, #{key => K}}}
+                    end
             end;
         {counter_value, K} ->
-            case vordb_cache:get_counter(Partition, K) of
-                {ok, CounterState} ->
-                    Val = 'vordb@counter':value(CounterState),
-                    {ok, {counter_value, #{key => K, val => Val}}};
-                {error, _} ->
-                    {ok, {counter_not_found, #{key => K}}}
+            case is_expired_ttl(Partition, counter, K) of
+                true -> {ok, {counter_not_found, #{key => K}}};
+                false ->
+                    case vordb_cache:get_counter(Partition, K) of
+                        {ok, CounterState} ->
+                            Val = 'vordb@counter':value(CounterState),
+                            {ok, {counter_value, #{key => K, val => Val}}};
+                        {error, _} ->
+                            {ok, {counter_not_found, #{key => K}}}
+                    end
             end;
         unknown ->
             %% Fallback to gen_server for unknown message types
@@ -159,6 +175,20 @@ classify_read({set_members, #{key := K}}) -> {set_members, K};
 classify_read({counter_value, #{key := K}}) -> {counter_value, K};
 classify_read(_) -> unknown.
 
+%% TTL expiration checks
+is_expired_lww(Entry) when is_map(Entry) ->
+    case maps:get(expires_at, Entry, 0) of
+        0 -> false;
+        ExpiresAt -> erlang:system_time(millisecond) >= ExpiresAt
+    end;
+is_expired_lww(_) -> false.
+
+is_expired_ttl(Partition, Type, Key) ->
+    case vordb_cache:get_ttl(Partition, Type, Key) of
+        0 -> false;
+        ExpiresAt -> erlang:system_time(millisecond) >= ExpiresAt
+    end.
+
 %% LWW tombstone detection — handles both map format and Gleam tuple format
 is_lww_tombstone(#{value := '__tombstone__'}) -> true;
 is_lww_tombstone({tombstone, _, _}) -> true;
@@ -168,6 +198,72 @@ is_lww_tombstone(_) -> false.
 extract_lww_value(#{value := V}) -> V;
 extract_lww_value({lww_entry, V, _, _}) -> V;
 extract_lww_value(_) -> none.
+
+%% ===== Bucket-aware entry points =====
+
+%% Write through a bucket. BucketName is the bucket, Op is the operation atom
+%% (put, delete, set_add, set_remove, counter_increment, counter_decrement),
+%% Params is a map of operation-specific fields (key, value, element, amount).
+bucket_write(BucketName, Op, Params) ->
+    case vordb_bucket_registry:get_bucket(BucketName) of
+        {error, not_found} -> {error, bucket_not_found};
+        {ok, Bucket} ->
+            Type = maps:get(crdt_type, Bucket),
+            case validate_op(Type, Op) of
+                ok ->
+                    Key = maps:get(key, Params),
+                    FullKey = <<BucketName/binary, ":", Key/binary>>,
+                    TTL = maps:get(ttl_seconds, Bucket, 0),
+                    Message = build_message(Op, FullKey, Params#{ttl_seconds => TTL}),
+                    write(FullKey, Message);
+                {error, _} = Err -> Err
+            end
+    end.
+
+%% Read through a bucket. Op is get, set_members, or counter_value.
+bucket_read(BucketName, Params) ->
+    case vordb_bucket_registry:get_bucket(BucketName) of
+        {error, not_found} -> {error, bucket_not_found};
+        {ok, Bucket} ->
+            Type = maps:get(crdt_type, Bucket),
+            Key = maps:get(key, Params),
+            FullKey = <<BucketName/binary, ":", Key/binary>>,
+            Message = build_read_message(Type, FullKey),
+            read(FullKey, Message)
+    end.
+
+validate_op(lww, put) -> ok;
+validate_op(lww, delete) -> ok;
+validate_op(orswot, set_add) -> ok;
+validate_op(orswot, set_remove) -> ok;
+validate_op(pn_counter, counter_increment) -> ok;
+validate_op(pn_counter, counter_decrement) -> ok;
+validate_op(ExpectedType, Op) -> {error, {type_mismatch, ExpectedType, Op}}.
+
+build_message(put, FullKey, Params) ->
+    {put, #{key => FullKey, value => maps:get(value, Params),
+            ttl_seconds => maps:get(ttl_seconds, Params, 0)}};
+build_message(delete, FullKey, Params) ->
+    {delete, #{key => FullKey, ttl_seconds => maps:get(ttl_seconds, Params, 0)}};
+build_message(set_add, FullKey, Params) ->
+    {set_add, #{key => FullKey, element => maps:get(element, Params),
+                ttl_seconds => maps:get(ttl_seconds, Params, 0)}};
+build_message(set_remove, FullKey, Params) ->
+    {set_remove, #{key => FullKey, element => maps:get(element, Params),
+                   ttl_seconds => maps:get(ttl_seconds, Params, 0)}};
+build_message(counter_increment, FullKey, Params) ->
+    {counter_increment, #{key => FullKey, amount => maps:get(amount, Params, 1),
+                          ttl_seconds => maps:get(ttl_seconds, Params, 0)}};
+build_message(counter_decrement, FullKey, Params) ->
+    {counter_decrement, #{key => FullKey, amount => maps:get(amount, Params, 1),
+                          ttl_seconds => maps:get(ttl_seconds, Params, 0)}}.
+
+build_read_message(lww, FullKey) ->
+    {get, #{key => FullKey}};
+build_read_message(orswot, FullKey) ->
+    {set_members, #{key => FullKey}};
+build_read_message(pn_counter, FullKey) ->
+    {counter_value, #{key => FullKey}}.
 
 %% ===== Internal =====
 

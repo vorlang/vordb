@@ -11,7 +11,7 @@ build: proto vor
 proto:
 	@if [ ! -f src/vordb_pb.erl ] || [ proto/vordb.proto -nt src/vordb_pb.erl ]; then \
 		gleam build 2>/dev/null; \
-		erl -pa build/dev/erlang/*/ebin -noshell -eval 'ok = gpb_compile:file("proto/vordb.proto", [{i, "proto"}, {o_erl, "src"}, {o_hrl, "src"}, maps, {maps_unset_optional, omitted}, {module_name, "vordb_pb"}]), io:format("Proto compiled~n"), halt().'; \
+		erl -pa build/dev/erlang/*/ebin -noshell -eval 'ok = gpb_compile:file("proto/vordb.proto", [{i, "proto"}, {o_erl, "src"}, {o_hrl, "src"}, maps, {maps_unset_optional, omitted}, strings_as_binaries, {module_name, "vordb_pb"}]), io:format("Proto compiled~n"), halt().'; \
 	fi
 
 vor:

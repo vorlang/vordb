@@ -64,22 +64,22 @@ teardown(Dir, Nodes) ->
     os:cmd("rm -rf " ++ binary_to_list(Dir)).
 
 put_kv(#{pid := Pid}, Key, Value) ->
-    gen_server:call(Pid, {put, #{key => Key, value => Value}}).
+    gen_server:call(Pid, {put, #{key => Key, value => Value, ttl_seconds => 0}}).
 
 get_kv(#{pid := Pid}, Key) ->
     gen_server:call(Pid, {get, #{key => Key}}).
 
 delete_kv(#{pid := Pid}, Key) ->
-    gen_server:call(Pid, {delete, #{key => Key}}).
+    gen_server:call(Pid, {delete, #{key => Key, ttl_seconds => 0}}).
 
 set_add(#{pid := Pid}, Key, Element) ->
-    gen_server:call(Pid, {set_add, #{key => Key, element => Element}}).
+    gen_server:call(Pid, {set_add, #{key => Key, element => Element, ttl_seconds => 0}}).
 
 set_members(#{pid := Pid}, Key) ->
     gen_server:call(Pid, {set_members, #{key => Key}}).
 
 counter_inc(#{pid := Pid}, Key, Amount) ->
-    gen_server:call(Pid, {counter_increment, #{key => Key, amount => Amount}}).
+    gen_server:call(Pid, {counter_increment, #{key => Key, amount => Amount, ttl_seconds => 0}}).
 
 counter_val(#{pid := Pid}, Key) ->
     gen_server:call(Pid, {counter_value, #{key => Key}}).
@@ -193,7 +193,7 @@ test_orset_concurrent() ->
     set_add(N1, <<"s1">>, <<"alice">>),
     gossip_sets(N1, N2),
     %% N1 removes, N2 re-adds concurrently
-    gen_server:call(maps:get(pid, N1), {set_remove, #{key => <<"s1">>, element => <<"alice">>}}),
+    gen_server:call(maps:get(pid, N1), {set_remove, #{key => <<"s1">>, element => <<"alice">>, ttl_seconds => 0}}),
     set_add(N2, <<"s1">>, <<"alice">>),
     gossip_sets(N1, N2), gossip_sets(N2, N1),
     {set_members, #{members := M1}} = set_members(N1, <<"s1">>),

@@ -37,3 +37,29 @@ pub type LookupResult {
 pub type DirtyKeys {
   DirtyKeys(lww: Set(String), set_keys: Set(String), counter: Set(String))
 }
+
+/// CRDT type tag — determines which agent handler and merge function a bucket uses.
+pub type CrdtType {
+  CrdtLww
+  CrdtOrswot
+  CrdtPnCounter
+}
+
+/// Bucket — a named collection with per-bucket CRDT type, TTL, and replication.
+pub type Bucket {
+  Bucket(
+    name: String,
+    crdt_type: CrdtType,
+    ttl_seconds: Int,       // 0 = no expiration
+    replication_n: Int,     // 0 = use cluster default
+    created_at: Int,
+  )
+}
+
+/// Bucket operation errors.
+pub type BucketError {
+  BucketAlreadyExists
+  BucketNotFound
+  InvalidBucketConfig(reason: String)
+  CrdtTypeMismatch(expected: CrdtType, got: String)
+}

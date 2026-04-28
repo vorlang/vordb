@@ -56,7 +56,8 @@
       #{value                   => iodata(),        % = 1, optional
         timestamp               => integer(),       % = 2, optional, 64 bits
         node_id                 => unicode:chardata(), % = 3, optional
-        is_tombstone            => boolean() | 0 | 1 % = 4, optional
+        is_tombstone            => boolean() | 0 | 1, % = 4, optional
+        expires_at              => integer()        % = 5, optional, 64 bits
        }.
 
 -type 'OrswotDots'() ::
@@ -65,12 +66,16 @@
 
 -type 'OrswotState'() ::
       #{entries                 => #{unicode:chardata() => 'OrswotDots'()}, % = 1
-        clock                   => #{unicode:chardata() => integer()} % = 2
+        clock                   => #{unicode:chardata() => integer()}, % = 2
+        expires_at              => integer(),       % = 3, optional, 64 bits
+        last_modified           => integer()        % = 4, optional, 64 bits
        }.
 
 -type 'PnCounter'() ::
       #{p                       => #{unicode:chardata() => integer()}, % = 1
-        n                       => #{unicode:chardata() => integer()} % = 2
+        n                       => #{unicode:chardata() => integer()}, % = 2
+        expires_at              => integer(),       % = 3, optional, 64 bits
+        last_modified           => integer()        % = 4, optional, 64 bits
        }.
 
 -type 'Request'() ::
@@ -84,16 +89,19 @@
        }.
 
 -type 'PutRequest'() ::
-      #{key                     => unicode:chardata(), % = 1, optional
-        value                   => iodata()         % = 2, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata(), % = 2, optional
+        value                   => iodata()         % = 3, optional
        }.
 
 -type 'GetRequest'() ::
-      #{key                     => unicode:chardata() % = 1, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata() % = 2, optional
        }.
 
 -type 'DeleteRequest'() ::
-      #{key                     => unicode:chardata() % = 1, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata() % = 2, optional
        }.
 
 -type 'OkResponse'() ::
@@ -110,17 +118,20 @@
        }.
 
 -type 'SetAddRequest'() ::
-      #{key                     => unicode:chardata(), % = 1, optional
-        element                 => unicode:chardata() % = 2, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata(), % = 2, optional
+        element                 => unicode:chardata() % = 3, optional
        }.
 
 -type 'SetRemoveRequest'() ::
-      #{key                     => unicode:chardata(), % = 1, optional
-        element                 => unicode:chardata() % = 2, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata(), % = 2, optional
+        element                 => unicode:chardata() % = 3, optional
        }.
 
 -type 'SetMembersRequest'() ::
-      #{key                     => unicode:chardata() % = 1, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata() % = 2, optional
        }.
 
 -type 'SetMembersResponse'() ::
@@ -129,17 +140,20 @@
        }.
 
 -type 'CounterIncrementRequest'() ::
-      #{key                     => unicode:chardata(), % = 1, optional
-        amount                  => integer()        % = 2, optional, 64 bits
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata(), % = 2, optional
+        amount                  => integer()        % = 3, optional, 64 bits
        }.
 
 -type 'CounterDecrementRequest'() ::
-      #{key                     => unicode:chardata(), % = 1, optional
-        amount                  => integer()        % = 2, optional, 64 bits
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata(), % = 2, optional
+        amount                  => integer()        % = 3, optional, 64 bits
        }.
 
 -type 'CounterValueRequest'() ::
-      #{key                     => unicode:chardata() % = 1, optional
+      #{bucket                  => unicode:chardata(), % = 1, optional
+        key                     => unicode:chardata() % = 2, optional
        }.
 
 -type 'CounterValueResponse'() ::
@@ -234,15 +248,25 @@ encode_msg_LwwEntry(#{} = M, Bin, TrUserData) ->
                  end;
              _ -> B2
          end,
+    B4 = case M of
+             #{is_tombstone := F4} ->
+                 begin
+                     TrF4 = id(F4, TrUserData),
+                     if TrF4 =:= false -> B3;
+                        true -> e_type_bool(TrF4, <<B3/binary, 32>>, TrUserData)
+                     end
+                 end;
+             _ -> B3
+         end,
     case M of
-        #{is_tombstone := F4} ->
+        #{expires_at := F5} ->
             begin
-                TrF4 = id(F4, TrUserData),
-                if TrF4 =:= false -> B3;
-                   true -> e_type_bool(TrF4, <<B3/binary, 32>>, TrUserData)
+                TrF5 = id(F5, TrUserData),
+                if TrF5 =:= 0 -> B4;
+                   true -> e_type_int64(TrF5, <<B4/binary, 40>>, TrUserData)
                 end
             end;
-        _ -> B3
+        _ -> B4
     end.
 
 encode_msg_OrswotDots(Msg, TrUserData) -> encode_msg_OrswotDots(Msg, <<>>, TrUserData).
@@ -270,13 +294,33 @@ encode_msg_OrswotState(#{} = M, Bin, TrUserData) ->
                  end;
              _ -> Bin
          end,
+    B2 = case M of
+             #{clock := F2} ->
+                 TrF2 = 'tr_encode_OrswotState.clock'(F2, TrUserData),
+                 if TrF2 == [] -> B1;
+                    true -> e_field_OrswotState_clock(TrF2, B1, TrUserData)
+                 end;
+             _ -> B1
+         end,
+    B3 = case M of
+             #{expires_at := F3} ->
+                 begin
+                     TrF3 = id(F3, TrUserData),
+                     if TrF3 =:= 0 -> B2;
+                        true -> e_type_int64(TrF3, <<B2/binary, 24>>, TrUserData)
+                     end
+                 end;
+             _ -> B2
+         end,
     case M of
-        #{clock := F2} ->
-            TrF2 = 'tr_encode_OrswotState.clock'(F2, TrUserData),
-            if TrF2 == [] -> B1;
-               true -> e_field_OrswotState_clock(TrF2, B1, TrUserData)
+        #{last_modified := F4} ->
+            begin
+                TrF4 = id(F4, TrUserData),
+                if TrF4 =:= 0 -> B3;
+                   true -> e_type_int64(TrF4, <<B3/binary, 32>>, TrUserData)
+                end
             end;
-        _ -> B1
+        _ -> B3
     end.
 
 encode_msg_PnCounter(Msg, TrUserData) -> encode_msg_PnCounter(Msg, <<>>, TrUserData).
@@ -291,13 +335,33 @@ encode_msg_PnCounter(#{} = M, Bin, TrUserData) ->
                  end;
              _ -> Bin
          end,
+    B2 = case M of
+             #{n := F2} ->
+                 TrF2 = 'tr_encode_PnCounter.n'(F2, TrUserData),
+                 if TrF2 == [] -> B1;
+                    true -> e_field_PnCounter_n(TrF2, B1, TrUserData)
+                 end;
+             _ -> B1
+         end,
+    B3 = case M of
+             #{expires_at := F3} ->
+                 begin
+                     TrF3 = id(F3, TrUserData),
+                     if TrF3 =:= 0 -> B2;
+                        true -> e_type_int64(TrF3, <<B2/binary, 24>>, TrUserData)
+                     end
+                 end;
+             _ -> B2
+         end,
     case M of
-        #{n := F2} ->
-            TrF2 = 'tr_encode_PnCounter.n'(F2, TrUserData),
-            if TrF2 == [] -> B1;
-               true -> e_field_PnCounter_n(TrF2, B1, TrUserData)
+        #{last_modified := F4} ->
+            begin
+                TrF4 = id(F4, TrUserData),
+                if TrF4 =:= 0 -> B3;
+                   true -> e_type_int64(TrF4, <<B3/binary, 32>>, TrUserData)
+                end
             end;
-        _ -> B1
+        _ -> B3
     end.
 
 encode_msg_Request(Msg, TrUserData) -> encode_msg_Request(Msg, <<>>, TrUserData).
@@ -362,7 +426,45 @@ encode_msg_PutRequest(Msg, TrUserData) -> encode_msg_PutRequest(Msg, <<>>, TrUse
 
 encode_msg_PutRequest(#{} = M, Bin, TrUserData) ->
     B1 = case M of
-             #{key := F1} ->
+             #{bucket := F1} ->
+                 begin
+                     TrF1 = id(F1, TrUserData),
+                     case is_empty_string(TrF1) of
+                         true -> Bin;
+                         false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
+                     end
+                 end;
+             _ -> Bin
+         end,
+    B2 = case M of
+             #{key := F2} ->
+                 begin
+                     TrF2 = id(F2, TrUserData),
+                     case is_empty_string(TrF2) of
+                         true -> B1;
+                         false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                     end
+                 end;
+             _ -> B1
+         end,
+    case M of
+        #{value := F3} ->
+            begin
+                TrF3 = id(F3, TrUserData),
+                case iolist_size(TrF3) of
+                    0 -> B2;
+                    _ -> e_type_bytes(TrF3, <<B2/binary, 26>>, TrUserData)
+                end
+            end;
+        _ -> B2
+    end.
+
+encode_msg_GetRequest(Msg, TrUserData) -> encode_msg_GetRequest(Msg, <<>>, TrUserData).
+
+
+encode_msg_GetRequest(#{} = M, Bin, TrUserData) ->
+    B1 = case M of
+             #{bucket := F1} ->
                  begin
                      TrF1 = id(F1, TrUserData),
                      case is_empty_string(TrF1) of
@@ -373,47 +475,42 @@ encode_msg_PutRequest(#{} = M, Bin, TrUserData) ->
              _ -> Bin
          end,
     case M of
-        #{value := F2} ->
+        #{key := F2} ->
             begin
                 TrF2 = id(F2, TrUserData),
-                case iolist_size(TrF2) of
-                    0 -> B1;
-                    _ -> e_type_bytes(TrF2, <<B1/binary, 18>>, TrUserData)
+                case is_empty_string(TrF2) of
+                    true -> B1;
+                    false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
                 end
             end;
         _ -> B1
-    end.
-
-encode_msg_GetRequest(Msg, TrUserData) -> encode_msg_GetRequest(Msg, <<>>, TrUserData).
-
-
-encode_msg_GetRequest(#{} = M, Bin, TrUserData) ->
-    case M of
-        #{key := F1} ->
-            begin
-                TrF1 = id(F1, TrUserData),
-                case is_empty_string(TrF1) of
-                    true -> Bin;
-                    false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
-                end
-            end;
-        _ -> Bin
     end.
 
 encode_msg_DeleteRequest(Msg, TrUserData) -> encode_msg_DeleteRequest(Msg, <<>>, TrUserData).
 
 
 encode_msg_DeleteRequest(#{} = M, Bin, TrUserData) ->
+    B1 = case M of
+             #{bucket := F1} ->
+                 begin
+                     TrF1 = id(F1, TrUserData),
+                     case is_empty_string(TrF1) of
+                         true -> Bin;
+                         false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
+                     end
+                 end;
+             _ -> Bin
+         end,
     case M of
-        #{key := F1} ->
+        #{key := F2} ->
             begin
-                TrF1 = id(F1, TrUserData),
-                case is_empty_string(TrF1) of
-                    true -> Bin;
-                    false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
+                TrF2 = id(F2, TrUserData),
+                case is_empty_string(TrF2) of
+                    true -> B1;
+                    false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
                 end
             end;
-        _ -> Bin
+        _ -> B1
     end.
 
 encode_msg_OkResponse(Msg, TrUserData) -> encode_msg_OkResponse(Msg, <<>>, TrUserData).
@@ -479,7 +576,7 @@ encode_msg_SetAddRequest(Msg, TrUserData) -> encode_msg_SetAddRequest(Msg, <<>>,
 
 encode_msg_SetAddRequest(#{} = M, Bin, TrUserData) ->
     B1 = case M of
-             #{key := F1} ->
+             #{bucket := F1} ->
                  begin
                      TrF1 = id(F1, TrUserData),
                      case is_empty_string(TrF1) of
@@ -489,16 +586,27 @@ encode_msg_SetAddRequest(#{} = M, Bin, TrUserData) ->
                  end;
              _ -> Bin
          end,
+    B2 = case M of
+             #{key := F2} ->
+                 begin
+                     TrF2 = id(F2, TrUserData),
+                     case is_empty_string(TrF2) of
+                         true -> B1;
+                         false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                     end
+                 end;
+             _ -> B1
+         end,
     case M of
-        #{element := F2} ->
+        #{element := F3} ->
             begin
-                TrF2 = id(F2, TrUserData),
-                case is_empty_string(TrF2) of
-                    true -> B1;
-                    false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                TrF3 = id(F3, TrUserData),
+                case is_empty_string(TrF3) of
+                    true -> B2;
+                    false -> e_type_string(TrF3, <<B2/binary, 26>>, TrUserData)
                 end
             end;
-        _ -> B1
+        _ -> B2
     end.
 
 encode_msg_SetRemoveRequest(Msg, TrUserData) -> encode_msg_SetRemoveRequest(Msg, <<>>, TrUserData).
@@ -506,7 +614,45 @@ encode_msg_SetRemoveRequest(Msg, TrUserData) -> encode_msg_SetRemoveRequest(Msg,
 
 encode_msg_SetRemoveRequest(#{} = M, Bin, TrUserData) ->
     B1 = case M of
-             #{key := F1} ->
+             #{bucket := F1} ->
+                 begin
+                     TrF1 = id(F1, TrUserData),
+                     case is_empty_string(TrF1) of
+                         true -> Bin;
+                         false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
+                     end
+                 end;
+             _ -> Bin
+         end,
+    B2 = case M of
+             #{key := F2} ->
+                 begin
+                     TrF2 = id(F2, TrUserData),
+                     case is_empty_string(TrF2) of
+                         true -> B1;
+                         false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                     end
+                 end;
+             _ -> B1
+         end,
+    case M of
+        #{element := F3} ->
+            begin
+                TrF3 = id(F3, TrUserData),
+                case is_empty_string(TrF3) of
+                    true -> B2;
+                    false -> e_type_string(TrF3, <<B2/binary, 26>>, TrUserData)
+                end
+            end;
+        _ -> B2
+    end.
+
+encode_msg_SetMembersRequest(Msg, TrUserData) -> encode_msg_SetMembersRequest(Msg, <<>>, TrUserData).
+
+
+encode_msg_SetMembersRequest(#{} = M, Bin, TrUserData) ->
+    B1 = case M of
+             #{bucket := F1} ->
                  begin
                      TrF1 = id(F1, TrUserData),
                      case is_empty_string(TrF1) of
@@ -517,7 +663,7 @@ encode_msg_SetRemoveRequest(#{} = M, Bin, TrUserData) ->
              _ -> Bin
          end,
     case M of
-        #{element := F2} ->
+        #{key := F2} ->
             begin
                 TrF2 = id(F2, TrUserData),
                 case is_empty_string(TrF2) of
@@ -526,22 +672,6 @@ encode_msg_SetRemoveRequest(#{} = M, Bin, TrUserData) ->
                 end
             end;
         _ -> B1
-    end.
-
-encode_msg_SetMembersRequest(Msg, TrUserData) -> encode_msg_SetMembersRequest(Msg, <<>>, TrUserData).
-
-
-encode_msg_SetMembersRequest(#{} = M, Bin, TrUserData) ->
-    case M of
-        #{key := F1} ->
-            begin
-                TrF1 = id(F1, TrUserData),
-                case is_empty_string(TrF1) of
-                    true -> Bin;
-                    false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
-                end
-            end;
-        _ -> Bin
     end.
 
 encode_msg_SetMembersResponse(Msg, TrUserData) -> encode_msg_SetMembersResponse(Msg, <<>>, TrUserData).
@@ -573,7 +703,7 @@ encode_msg_CounterIncrementRequest(Msg, TrUserData) -> encode_msg_CounterIncreme
 
 encode_msg_CounterIncrementRequest(#{} = M, Bin, TrUserData) ->
     B1 = case M of
-             #{key := F1} ->
+             #{bucket := F1} ->
                  begin
                      TrF1 = id(F1, TrUserData),
                      case is_empty_string(TrF1) of
@@ -583,15 +713,26 @@ encode_msg_CounterIncrementRequest(#{} = M, Bin, TrUserData) ->
                  end;
              _ -> Bin
          end,
+    B2 = case M of
+             #{key := F2} ->
+                 begin
+                     TrF2 = id(F2, TrUserData),
+                     case is_empty_string(TrF2) of
+                         true -> B1;
+                         false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                     end
+                 end;
+             _ -> B1
+         end,
     case M of
-        #{amount := F2} ->
+        #{amount := F3} ->
             begin
-                TrF2 = id(F2, TrUserData),
-                if TrF2 =:= 0 -> B1;
-                   true -> e_type_int64(TrF2, <<B1/binary, 16>>, TrUserData)
+                TrF3 = id(F3, TrUserData),
+                if TrF3 =:= 0 -> B2;
+                   true -> e_type_int64(TrF3, <<B2/binary, 24>>, TrUserData)
                 end
             end;
-        _ -> B1
+        _ -> B2
     end.
 
 encode_msg_CounterDecrementRequest(Msg, TrUserData) -> encode_msg_CounterDecrementRequest(Msg, <<>>, TrUserData).
@@ -599,7 +740,44 @@ encode_msg_CounterDecrementRequest(Msg, TrUserData) -> encode_msg_CounterDecreme
 
 encode_msg_CounterDecrementRequest(#{} = M, Bin, TrUserData) ->
     B1 = case M of
-             #{key := F1} ->
+             #{bucket := F1} ->
+                 begin
+                     TrF1 = id(F1, TrUserData),
+                     case is_empty_string(TrF1) of
+                         true -> Bin;
+                         false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
+                     end
+                 end;
+             _ -> Bin
+         end,
+    B2 = case M of
+             #{key := F2} ->
+                 begin
+                     TrF2 = id(F2, TrUserData),
+                     case is_empty_string(TrF2) of
+                         true -> B1;
+                         false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
+                     end
+                 end;
+             _ -> B1
+         end,
+    case M of
+        #{amount := F3} ->
+            begin
+                TrF3 = id(F3, TrUserData),
+                if TrF3 =:= 0 -> B2;
+                   true -> e_type_int64(TrF3, <<B2/binary, 24>>, TrUserData)
+                end
+            end;
+        _ -> B2
+    end.
+
+encode_msg_CounterValueRequest(Msg, TrUserData) -> encode_msg_CounterValueRequest(Msg, <<>>, TrUserData).
+
+
+encode_msg_CounterValueRequest(#{} = M, Bin, TrUserData) ->
+    B1 = case M of
+             #{bucket := F1} ->
                  begin
                      TrF1 = id(F1, TrUserData),
                      case is_empty_string(TrF1) of
@@ -610,30 +788,15 @@ encode_msg_CounterDecrementRequest(#{} = M, Bin, TrUserData) ->
              _ -> Bin
          end,
     case M of
-        #{amount := F2} ->
+        #{key := F2} ->
             begin
                 TrF2 = id(F2, TrUserData),
-                if TrF2 =:= 0 -> B1;
-                   true -> e_type_int64(TrF2, <<B1/binary, 16>>, TrUserData)
+                case is_empty_string(TrF2) of
+                    true -> B1;
+                    false -> e_type_string(TrF2, <<B1/binary, 18>>, TrUserData)
                 end
             end;
         _ -> B1
-    end.
-
-encode_msg_CounterValueRequest(Msg, TrUserData) -> encode_msg_CounterValueRequest(Msg, <<>>, TrUserData).
-
-
-encode_msg_CounterValueRequest(#{} = M, Bin, TrUserData) ->
-    case M of
-        #{key := F1} ->
-            begin
-                TrF1 = id(F1, TrUserData),
-                case is_empty_string(TrF1) of
-                    true -> Bin;
-                    false -> e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData)
-                end
-            end;
-        _ -> Bin
     end.
 
 encode_msg_CounterValueResponse(Msg, TrUserData) -> encode_msg_CounterValueResponse(Msg, <<>>, TrUserData).
@@ -1000,70 +1163,77 @@ decode_msg_2_doit('ErrorResponse', Bin, TrUserData) -> id(decode_msg_ErrorRespon
 
 
 
-decode_msg_LwwEntry(Bin, TrUserData) -> dfp_read_field_def_LwwEntry(Bin, 0, 0, 0, id(<<>>, TrUserData), id(0, TrUserData), id(<<>>, TrUserData), id(false, TrUserData), TrUserData).
+decode_msg_LwwEntry(Bin, TrUserData) -> dfp_read_field_def_LwwEntry(Bin, 0, 0, 0, id(<<>>, TrUserData), id(0, TrUserData), id(<<>>, TrUserData), id(false, TrUserData), id(0, TrUserData), TrUserData).
 
-dfp_read_field_def_LwwEntry(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_LwwEntry_value(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-dfp_read_field_def_LwwEntry(<<16, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_LwwEntry_timestamp(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-dfp_read_field_def_LwwEntry(<<26, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_LwwEntry_node_id(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-dfp_read_field_def_LwwEntry(<<32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_LwwEntry_is_tombstone(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-dfp_read_field_def_LwwEntry(<<>>, 0, 0, _, F@_1, F@_2, F@_3, F@_4, _) -> #{value => F@_1, timestamp => F@_2, node_id => F@_3, is_tombstone => F@_4};
-dfp_read_field_def_LwwEntry(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dg_read_field_def_LwwEntry(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+dfp_read_field_def_LwwEntry(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> d_field_LwwEntry_value(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dfp_read_field_def_LwwEntry(<<16, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> d_field_LwwEntry_timestamp(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dfp_read_field_def_LwwEntry(<<26, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> d_field_LwwEntry_node_id(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dfp_read_field_def_LwwEntry(<<32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> d_field_LwwEntry_is_tombstone(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dfp_read_field_def_LwwEntry(<<40, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> d_field_LwwEntry_expires_at(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dfp_read_field_def_LwwEntry(<<>>, 0, 0, _, F@_1, F@_2, F@_3, F@_4, F@_5, _) -> #{value => F@_1, timestamp => F@_2, node_id => F@_3, is_tombstone => F@_4, expires_at => F@_5};
+dfp_read_field_def_LwwEntry(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> dg_read_field_def_LwwEntry(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
-dg_read_field_def_LwwEntry(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 32 - 7 -> dg_read_field_def_LwwEntry(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-dg_read_field_def_LwwEntry(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
+dg_read_field_def_LwwEntry(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 32 - 7 -> dg_read_field_def_LwwEntry(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+dg_read_field_def_LwwEntry(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_LwwEntry_value(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
-        16 -> d_field_LwwEntry_timestamp(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
-        26 -> d_field_LwwEntry_node_id(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
-        32 -> d_field_LwwEntry_is_tombstone(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        10 -> d_field_LwwEntry_value(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+        16 -> d_field_LwwEntry_timestamp(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+        26 -> d_field_LwwEntry_node_id(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+        32 -> d_field_LwwEntry_is_tombstone(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+        40 -> d_field_LwwEntry_expires_at(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
-                1 -> skip_64_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
-                2 -> skip_length_delimited_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
-                3 -> skip_group_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
-                5 -> skip_32_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData)
+                0 -> skip_varint_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+                1 -> skip_64_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+                2 -> skip_length_delimited_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+                3 -> skip_group_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+                5 -> skip_32_LwwEntry(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData)
             end
     end;
-dg_read_field_def_LwwEntry(<<>>, 0, 0, _, F@_1, F@_2, F@_3, F@_4, _) -> #{value => F@_1, timestamp => F@_2, node_id => F@_3, is_tombstone => F@_4}.
+dg_read_field_def_LwwEntry(<<>>, 0, 0, _, F@_1, F@_2, F@_3, F@_4, F@_5, _) -> #{value => F@_1, timestamp => F@_2, node_id => F@_3, is_tombstone => F@_4, expires_at => F@_5}.
 
-d_field_LwwEntry_value(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_LwwEntry_value(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-d_field_LwwEntry_value(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, F@_4, TrUserData) ->
+d_field_LwwEntry_value(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> d_field_LwwEntry_value(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+d_field_LwwEntry_value(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, F@_4, F@_5, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, NewFValue, F@_2, F@_3, F@_4, TrUserData).
+    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, NewFValue, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
-d_field_LwwEntry_timestamp(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_LwwEntry_timestamp(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-d_field_LwwEntry_timestamp(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, F@_4, TrUserData) ->
+d_field_LwwEntry_timestamp(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> d_field_LwwEntry_timestamp(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+d_field_LwwEntry_timestamp(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, F@_4, F@_5, TrUserData) ->
     {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
-    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, NewFValue, F@_3, F@_4, TrUserData).
+    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, NewFValue, F@_3, F@_4, F@_5, TrUserData).
 
-d_field_LwwEntry_node_id(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_LwwEntry_node_id(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-d_field_LwwEntry_node_id(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, F@_4, TrUserData) ->
+d_field_LwwEntry_node_id(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> d_field_LwwEntry_node_id(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+d_field_LwwEntry_node_id(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, F@_4, F@_5, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, F@_2, NewFValue, F@_4, TrUserData).
+    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, F@_2, NewFValue, F@_4, F@_5, TrUserData).
 
-d_field_LwwEntry_is_tombstone(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_LwwEntry_is_tombstone(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-d_field_LwwEntry_is_tombstone(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, _, TrUserData) ->
+d_field_LwwEntry_is_tombstone(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> d_field_LwwEntry_is_tombstone(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+d_field_LwwEntry_is_tombstone(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, _, F@_5, TrUserData) ->
     {NewFValue, RestF} = {id(X bsl N + Acc =/= 0, TrUserData), Rest},
-    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, F@_2, F@_3, NewFValue, TrUserData).
+    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, F@_2, F@_3, NewFValue, F@_5, TrUserData).
 
-skip_varint_LwwEntry(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> skip_varint_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-skip_varint_LwwEntry(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+d_field_LwwEntry_expires_at(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> d_field_LwwEntry_expires_at(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+d_field_LwwEntry_expires_at(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, _, TrUserData) ->
+    {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
+    dfp_read_field_def_LwwEntry(RestF, 0, 0, F, F@_1, F@_2, F@_3, F@_4, NewFValue, TrUserData).
 
-skip_length_delimited_LwwEntry(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> skip_length_delimited_LwwEntry(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
-skip_length_delimited_LwwEntry(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
+skip_varint_LwwEntry(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> skip_varint_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+skip_varint_LwwEntry(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
+
+skip_length_delimited_LwwEntry(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) when N < 57 -> skip_length_delimited_LwwEntry(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData);
+skip_length_delimited_LwwEntry(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_LwwEntry(Rest2, 0, 0, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+    dfp_read_field_def_LwwEntry(Rest2, 0, 0, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
-skip_group_LwwEntry(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
+skip_group_LwwEntry(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_LwwEntry(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData).
+    dfp_read_field_def_LwwEntry(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
-skip_32_LwwEntry(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+skip_32_LwwEntry(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
-skip_64_LwwEntry(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+skip_64_LwwEntry(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData) -> dfp_read_field_def_LwwEntry(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, F@_5, TrUserData).
 
 decode_msg_OrswotDots(Bin, TrUserData) -> dfp_read_field_def_OrswotDots(Bin, 0, 0, 0, 'tr_decode_init_default_OrswotDots.dots'([], TrUserData), TrUserData).
 
@@ -1109,107 +1279,140 @@ skip_32_OrswotDots(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_re
 
 skip_64_OrswotDots(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_OrswotDots(Rest, Z1, Z2, F, F@_1, TrUserData).
 
-decode_msg_OrswotState(Bin, TrUserData) -> dfp_read_field_def_OrswotState(Bin, 0, 0, 0, 'tr_decode_init_default_OrswotState.entries'([], TrUserData), 'tr_decode_init_default_OrswotState.clock'([], TrUserData), TrUserData).
+decode_msg_OrswotState(Bin, TrUserData) ->
+    dfp_read_field_def_OrswotState(Bin, 0, 0, 0, 'tr_decode_init_default_OrswotState.entries'([], TrUserData), 'tr_decode_init_default_OrswotState.clock'([], TrUserData), id(0, TrUserData), id(0, TrUserData), TrUserData).
 
-dfp_read_field_def_OrswotState(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_OrswotState_entries(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_OrswotState(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_OrswotState_clock(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_OrswotState(<<>>, 0, 0, _, R1, R2, TrUserData) -> #{entries => 'tr_decode_repeated_finalize_OrswotState.entries'(R1, TrUserData), clock => 'tr_decode_repeated_finalize_OrswotState.clock'(R2, TrUserData)};
-dfp_read_field_def_OrswotState(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_OrswotState(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_OrswotState(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_OrswotState_entries(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_OrswotState(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_OrswotState_clock(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_OrswotState(<<24, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_OrswotState_expires_at(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_OrswotState(<<32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_OrswotState_last_modified(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_OrswotState(<<>>, 0, 0, _, R1, R2, F@_3, F@_4, TrUserData) ->
+    #{entries => 'tr_decode_repeated_finalize_OrswotState.entries'(R1, TrUserData), clock => 'tr_decode_repeated_finalize_OrswotState.clock'(R2, TrUserData), expires_at => F@_3, last_modified => F@_4};
+dfp_read_field_def_OrswotState(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dg_read_field_def_OrswotState(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-dg_read_field_def_OrswotState(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_OrswotState(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_OrswotState(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_OrswotState(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 32 - 7 -> dg_read_field_def_OrswotState(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dg_read_field_def_OrswotState(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_OrswotState_entries(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        18 -> d_field_OrswotState_clock(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_OrswotState_entries(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        18 -> d_field_OrswotState_clock(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        24 -> d_field_OrswotState_expires_at(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        32 -> d_field_OrswotState_last_modified(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                1 -> skip_64_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                2 -> skip_length_delimited_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                3 -> skip_group_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                5 -> skip_32_OrswotState(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData)
             end
     end;
-dg_read_field_def_OrswotState(<<>>, 0, 0, _, R1, R2, TrUserData) -> #{entries => 'tr_decode_repeated_finalize_OrswotState.entries'(R1, TrUserData), clock => 'tr_decode_repeated_finalize_OrswotState.clock'(R2, TrUserData)}.
+dg_read_field_def_OrswotState(<<>>, 0, 0, _, R1, R2, F@_3, F@_4, TrUserData) ->
+    #{entries => 'tr_decode_repeated_finalize_OrswotState.entries'(R1, TrUserData), clock => 'tr_decode_repeated_finalize_OrswotState.clock'(R2, TrUserData), expires_at => F@_3, last_modified => F@_4}.
 
-d_field_OrswotState_entries(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_OrswotState_entries(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_OrswotState_entries(<<0:1, X:7, Rest/binary>>, N, Acc, F, Prev, F@_2, TrUserData) ->
+d_field_OrswotState_entries(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_OrswotState_entries(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_OrswotState_entries(<<0:1, X:7, Rest/binary>>, N, Acc, F, Prev, F@_2, F@_3, F@_4, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_map<string,OrswotDots>'(Bs, TrUserData), TrUserData), Rest2} end,
-    dfp_read_field_def_OrswotState(RestF, 0, 0, F, 'tr_decode_repeated_add_elem_OrswotState.entries'(NewFValue, Prev, TrUserData), F@_2, TrUserData).
+    dfp_read_field_def_OrswotState(RestF, 0, 0, F, 'tr_decode_repeated_add_elem_OrswotState.entries'(NewFValue, Prev, TrUserData), F@_2, F@_3, F@_4, TrUserData).
 
-d_field_OrswotState_clock(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_OrswotState_clock(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_OrswotState_clock(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, Prev, TrUserData) ->
+d_field_OrswotState_clock(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_OrswotState_clock(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_OrswotState_clock(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, Prev, F@_3, F@_4, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_map<string,int64>'(Bs, TrUserData), TrUserData), Rest2} end,
-    dfp_read_field_def_OrswotState(RestF, 0, 0, F, F@_1, 'tr_decode_repeated_add_elem_OrswotState.clock'(NewFValue, Prev, TrUserData), TrUserData).
+    dfp_read_field_def_OrswotState(RestF, 0, 0, F, F@_1, 'tr_decode_repeated_add_elem_OrswotState.clock'(NewFValue, Prev, TrUserData), F@_3, F@_4, TrUserData).
 
-skip_varint_OrswotState(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_OrswotState(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+d_field_OrswotState_expires_at(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_OrswotState_expires_at(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_OrswotState_expires_at(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, F@_4, TrUserData) ->
+    {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
+    dfp_read_field_def_OrswotState(RestF, 0, 0, F, F@_1, F@_2, NewFValue, F@_4, TrUserData).
 
-skip_length_delimited_OrswotState(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_OrswotState(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_OrswotState(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+d_field_OrswotState_last_modified(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_OrswotState_last_modified(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_OrswotState_last_modified(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, _, TrUserData) ->
+    {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
+    dfp_read_field_def_OrswotState(RestF, 0, 0, F, F@_1, F@_2, F@_3, NewFValue, TrUserData).
+
+skip_varint_OrswotState(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> skip_varint_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+skip_varint_OrswotState(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+
+skip_length_delimited_OrswotState(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> skip_length_delimited_OrswotState(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+skip_length_delimited_OrswotState(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_OrswotState(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_OrswotState(Rest2, 0, 0, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_group_OrswotState(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_OrswotState(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_OrswotState(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_OrswotState(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_32_OrswotState(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_OrswotState(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_64_OrswotState(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_OrswotState(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_OrswotState(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-decode_msg_PnCounter(Bin, TrUserData) -> dfp_read_field_def_PnCounter(Bin, 0, 0, 0, 'tr_decode_init_default_PnCounter.p'([], TrUserData), 'tr_decode_init_default_PnCounter.n'([], TrUserData), TrUserData).
+decode_msg_PnCounter(Bin, TrUserData) -> dfp_read_field_def_PnCounter(Bin, 0, 0, 0, 'tr_decode_init_default_PnCounter.p'([], TrUserData), 'tr_decode_init_default_PnCounter.n'([], TrUserData), id(0, TrUserData), id(0, TrUserData), TrUserData).
 
-dfp_read_field_def_PnCounter(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_PnCounter_p(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_PnCounter(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_PnCounter_n(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_PnCounter(<<>>, 0, 0, _, R1, R2, TrUserData) -> #{p => 'tr_decode_repeated_finalize_PnCounter.p'(R1, TrUserData), n => 'tr_decode_repeated_finalize_PnCounter.n'(R2, TrUserData)};
-dfp_read_field_def_PnCounter(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_PnCounter(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_PnCounter(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_PnCounter_p(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_PnCounter(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_PnCounter_n(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_PnCounter(<<24, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_PnCounter_expires_at(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_PnCounter(<<32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> d_field_PnCounter_last_modified(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dfp_read_field_def_PnCounter(<<>>, 0, 0, _, R1, R2, F@_3, F@_4, TrUserData) ->
+    #{p => 'tr_decode_repeated_finalize_PnCounter.p'(R1, TrUserData), n => 'tr_decode_repeated_finalize_PnCounter.n'(R2, TrUserData), expires_at => F@_3, last_modified => F@_4};
+dfp_read_field_def_PnCounter(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dg_read_field_def_PnCounter(Other, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-dg_read_field_def_PnCounter(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_PnCounter(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_PnCounter(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_PnCounter(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 32 - 7 -> dg_read_field_def_PnCounter(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+dg_read_field_def_PnCounter(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_PnCounter_p(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        18 -> d_field_PnCounter_n(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_PnCounter_p(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        18 -> d_field_PnCounter_n(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        24 -> d_field_PnCounter_expires_at(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
+        32 -> d_field_PnCounter_last_modified(Rest, 0, 0, 0, F@_1, F@_2, F@_3, F@_4, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                1 -> skip_64_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                2 -> skip_length_delimited_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                3 -> skip_group_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData);
+                5 -> skip_32_PnCounter(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, F@_4, TrUserData)
             end
     end;
-dg_read_field_def_PnCounter(<<>>, 0, 0, _, R1, R2, TrUserData) -> #{p => 'tr_decode_repeated_finalize_PnCounter.p'(R1, TrUserData), n => 'tr_decode_repeated_finalize_PnCounter.n'(R2, TrUserData)}.
+dg_read_field_def_PnCounter(<<>>, 0, 0, _, R1, R2, F@_3, F@_4, TrUserData) ->
+    #{p => 'tr_decode_repeated_finalize_PnCounter.p'(R1, TrUserData), n => 'tr_decode_repeated_finalize_PnCounter.n'(R2, TrUserData), expires_at => F@_3, last_modified => F@_4}.
 
-d_field_PnCounter_p(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_PnCounter_p(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_PnCounter_p(<<0:1, X:7, Rest/binary>>, N, Acc, F, Prev, F@_2, TrUserData) ->
+d_field_PnCounter_p(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_PnCounter_p(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_PnCounter_p(<<0:1, X:7, Rest/binary>>, N, Acc, F, Prev, F@_2, F@_3, F@_4, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_map<string,int64>'(Bs, TrUserData), TrUserData), Rest2} end,
-    dfp_read_field_def_PnCounter(RestF, 0, 0, F, 'tr_decode_repeated_add_elem_PnCounter.p'(NewFValue, Prev, TrUserData), F@_2, TrUserData).
+    dfp_read_field_def_PnCounter(RestF, 0, 0, F, 'tr_decode_repeated_add_elem_PnCounter.p'(NewFValue, Prev, TrUserData), F@_2, F@_3, F@_4, TrUserData).
 
-d_field_PnCounter_n(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_PnCounter_n(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_PnCounter_n(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, Prev, TrUserData) ->
+d_field_PnCounter_n(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_PnCounter_n(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_PnCounter_n(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, Prev, F@_3, F@_4, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_map<string,int64>'(Bs, TrUserData), TrUserData), Rest2} end,
-    dfp_read_field_def_PnCounter(RestF, 0, 0, F, F@_1, 'tr_decode_repeated_add_elem_PnCounter.n'(NewFValue, Prev, TrUserData), TrUserData).
+    dfp_read_field_def_PnCounter(RestF, 0, 0, F, F@_1, 'tr_decode_repeated_add_elem_PnCounter.n'(NewFValue, Prev, TrUserData), F@_3, F@_4, TrUserData).
 
-skip_varint_PnCounter(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_PnCounter(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+d_field_PnCounter_expires_at(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_PnCounter_expires_at(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_PnCounter_expires_at(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, F@_4, TrUserData) ->
+    {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
+    dfp_read_field_def_PnCounter(RestF, 0, 0, F, F@_1, F@_2, NewFValue, F@_4, TrUserData).
 
-skip_length_delimited_PnCounter(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_PnCounter(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_PnCounter(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+d_field_PnCounter_last_modified(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> d_field_PnCounter_last_modified(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+d_field_PnCounter_last_modified(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, _, TrUserData) ->
+    {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
+    dfp_read_field_def_PnCounter(RestF, 0, 0, F, F@_1, F@_2, F@_3, NewFValue, TrUserData).
+
+skip_varint_PnCounter(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> skip_varint_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+skip_varint_PnCounter(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
+
+skip_length_delimited_PnCounter(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) when N < 57 -> skip_length_delimited_PnCounter(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData);
+skip_length_delimited_PnCounter(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_PnCounter(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_PnCounter(Rest2, 0, 0, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_group_PnCounter(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_PnCounter(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_PnCounter(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_PnCounter(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_32_PnCounter(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_PnCounter(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
-skip_64_PnCounter(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_PnCounter(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData) -> dfp_read_field_def_PnCounter(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, F@_4, TrUserData).
 
 decode_msg_Request(Bin, TrUserData) -> dfp_read_field_def_Request(Bin, 0, 0, 0, id(0, TrUserData), id('$undef', TrUserData), TrUserData).
 
@@ -1570,144 +1773,165 @@ skip_32_Response(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> df
 
 skip_64_Response(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_Response(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-decode_msg_PutRequest(Bin, TrUserData) -> dfp_read_field_def_PutRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
+decode_msg_PutRequest(Bin, TrUserData) -> dfp_read_field_def_PutRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_PutRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_PutRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_PutRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_PutRequest_value(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_PutRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, value => F@_2};
-dfp_read_field_def_PutRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_PutRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_PutRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_PutRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_PutRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_PutRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_PutRequest(<<26, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_PutRequest_value(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_PutRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, value => F@_3};
+dfp_read_field_def_PutRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dg_read_field_def_PutRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-dg_read_field_def_PutRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_PutRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_PutRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_PutRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 32 - 7 -> dg_read_field_def_PutRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+dg_read_field_def_PutRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_PutRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        18 -> d_field_PutRequest_value(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_PutRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        18 -> d_field_PutRequest_key(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        26 -> d_field_PutRequest_value(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                1 -> skip_64_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                2 -> skip_length_delimited_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                3 -> skip_group_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                5 -> skip_32_PutRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData)
             end
     end;
-dg_read_field_def_PutRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, value => F@_2}.
+dg_read_field_def_PutRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, value => F@_3}.
 
-d_field_PutRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_PutRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_PutRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+d_field_PutRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_PutRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_PutRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_PutRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+    dfp_read_field_def_PutRequest(RestF, 0, 0, F, NewFValue, F@_2, F@_3, TrUserData).
 
-d_field_PutRequest_value(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_PutRequest_value(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_PutRequest_value(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+d_field_PutRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_PutRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_PutRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_PutRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
+    dfp_read_field_def_PutRequest(RestF, 0, 0, F, F@_1, NewFValue, F@_3, TrUserData).
 
-skip_varint_PutRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_PutRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+d_field_PutRequest_value(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_PutRequest_value(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_PutRequest_value(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_PutRequest(RestF, 0, 0, F, F@_1, F@_2, NewFValue, TrUserData).
 
-skip_length_delimited_PutRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_PutRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_PutRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+skip_varint_PutRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> skip_varint_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+skip_varint_PutRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
+
+skip_length_delimited_PutRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> skip_length_delimited_PutRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+skip_length_delimited_PutRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_PutRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_PutRequest(Rest2, 0, 0, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_group_PutRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_PutRequest(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_PutRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_PutRequest(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, TrUserData).
 
-skip_32_PutRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_PutRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_64_PutRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_PutRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_PutRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-decode_msg_GetRequest(Bin, TrUserData) -> dfp_read_field_def_GetRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), TrUserData).
+decode_msg_GetRequest(Bin, TrUserData) -> dfp_read_field_def_GetRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_GetRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> d_field_GetRequest_key(Rest, Z1, Z2, F, F@_1, TrUserData);
-dfp_read_field_def_GetRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1};
-dfp_read_field_def_GetRequest(Other, Z1, Z2, F, F@_1, TrUserData) -> dg_read_field_def_GetRequest(Other, Z1, Z2, F, F@_1, TrUserData).
+dfp_read_field_def_GetRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_GetRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_GetRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_GetRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_GetRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2};
+dfp_read_field_def_GetRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_GetRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-dg_read_field_def_GetRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 32 - 7 -> dg_read_field_def_GetRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-dg_read_field_def_GetRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, TrUserData) ->
+dg_read_field_def_GetRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_GetRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+dg_read_field_def_GetRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_GetRequest_key(Rest, 0, 0, 0, F@_1, TrUserData);
+        10 -> d_field_GetRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        18 -> d_field_GetRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                1 -> skip_64_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                2 -> skip_length_delimited_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                3 -> skip_group_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                5 -> skip_32_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData)
+                0 -> skip_varint_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                1 -> skip_64_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                2 -> skip_length_delimited_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                3 -> skip_group_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                5 -> skip_32_GetRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
             end
     end;
-dg_read_field_def_GetRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1}.
+dg_read_field_def_GetRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2}.
 
-d_field_GetRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> d_field_GetRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-d_field_GetRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, TrUserData) ->
+d_field_GetRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_GetRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_GetRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_GetRequest(RestF, 0, 0, F, NewFValue, TrUserData).
+    dfp_read_field_def_GetRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
 
-skip_varint_GetRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> skip_varint_GetRequest(Rest, Z1, Z2, F, F@_1, TrUserData);
-skip_varint_GetRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+d_field_GetRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_GetRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_GetRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_GetRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
 
-skip_length_delimited_GetRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> skip_length_delimited_GetRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-skip_length_delimited_GetRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) ->
+skip_varint_GetRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_GetRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+skip_varint_GetRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+skip_length_delimited_GetRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_GetRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+skip_length_delimited_GetRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_GetRequest(Rest2, 0, 0, F, F@_1, TrUserData).
+    dfp_read_field_def_GetRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
 
-skip_group_GetRequest(Bin, _, Z2, FNum, F@_1, TrUserData) ->
+skip_group_GetRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_GetRequest(Rest, 0, Z2, FNum, F@_1, TrUserData).
+    dfp_read_field_def_GetRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
 
-skip_32_GetRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_32_GetRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-skip_64_GetRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_64_GetRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_GetRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-decode_msg_DeleteRequest(Bin, TrUserData) -> dfp_read_field_def_DeleteRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), TrUserData).
+decode_msg_DeleteRequest(Bin, TrUserData) -> dfp_read_field_def_DeleteRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_DeleteRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> d_field_DeleteRequest_key(Rest, Z1, Z2, F, F@_1, TrUserData);
-dfp_read_field_def_DeleteRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1};
-dfp_read_field_def_DeleteRequest(Other, Z1, Z2, F, F@_1, TrUserData) -> dg_read_field_def_DeleteRequest(Other, Z1, Z2, F, F@_1, TrUserData).
+dfp_read_field_def_DeleteRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_DeleteRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_DeleteRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_DeleteRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_DeleteRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2};
+dfp_read_field_def_DeleteRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_DeleteRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-dg_read_field_def_DeleteRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 32 - 7 -> dg_read_field_def_DeleteRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-dg_read_field_def_DeleteRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, TrUserData) ->
+dg_read_field_def_DeleteRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_DeleteRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+dg_read_field_def_DeleteRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_DeleteRequest_key(Rest, 0, 0, 0, F@_1, TrUserData);
+        10 -> d_field_DeleteRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        18 -> d_field_DeleteRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                1 -> skip_64_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                2 -> skip_length_delimited_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                3 -> skip_group_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                5 -> skip_32_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData)
+                0 -> skip_varint_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                1 -> skip_64_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                2 -> skip_length_delimited_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                3 -> skip_group_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                5 -> skip_32_DeleteRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
             end
     end;
-dg_read_field_def_DeleteRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1}.
+dg_read_field_def_DeleteRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2}.
 
-d_field_DeleteRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> d_field_DeleteRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-d_field_DeleteRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, TrUserData) ->
+d_field_DeleteRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_DeleteRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_DeleteRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_DeleteRequest(RestF, 0, 0, F, NewFValue, TrUserData).
+    dfp_read_field_def_DeleteRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
 
-skip_varint_DeleteRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> skip_varint_DeleteRequest(Rest, Z1, Z2, F, F@_1, TrUserData);
-skip_varint_DeleteRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+d_field_DeleteRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_DeleteRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_DeleteRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_DeleteRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
 
-skip_length_delimited_DeleteRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> skip_length_delimited_DeleteRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-skip_length_delimited_DeleteRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) ->
+skip_varint_DeleteRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_DeleteRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+skip_varint_DeleteRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+skip_length_delimited_DeleteRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_DeleteRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+skip_length_delimited_DeleteRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_DeleteRequest(Rest2, 0, 0, F, F@_1, TrUserData).
+    dfp_read_field_def_DeleteRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
 
-skip_group_DeleteRequest(Bin, _, Z2, FNum, F@_1, TrUserData) ->
+skip_group_DeleteRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_DeleteRequest(Rest, 0, Z2, FNum, F@_1, TrUserData).
+    dfp_read_field_def_DeleteRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
 
-skip_32_DeleteRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_32_DeleteRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-skip_64_DeleteRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_64_DeleteRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_DeleteRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
 decode_msg_OkResponse(Bin, TrUserData) -> dfp_read_field_def_OkResponse(Bin, 0, 0, 0, id(0, TrUserData), TrUserData).
 
@@ -1848,151 +2072,172 @@ skip_32_NotFoundResponse(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 
 
 skip_64_NotFoundResponse(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_NotFoundResponse(Rest, Z1, Z2, F, F@_1, TrUserData).
 
-decode_msg_SetAddRequest(Bin, TrUserData) -> dfp_read_field_def_SetAddRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
+decode_msg_SetAddRequest(Bin, TrUserData) -> dfp_read_field_def_SetAddRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_SetAddRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetAddRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_SetAddRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetAddRequest_element(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_SetAddRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, element => F@_2};
-dfp_read_field_def_SetAddRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_SetAddRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_SetAddRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetAddRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetAddRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetAddRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetAddRequest(<<26, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetAddRequest_element(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetAddRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, element => F@_3};
+dfp_read_field_def_SetAddRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dg_read_field_def_SetAddRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-dg_read_field_def_SetAddRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetAddRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_SetAddRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_SetAddRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetAddRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+dg_read_field_def_SetAddRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_SetAddRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        18 -> d_field_SetAddRequest_element(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_SetAddRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        18 -> d_field_SetAddRequest_key(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        26 -> d_field_SetAddRequest_element(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                1 -> skip_64_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                2 -> skip_length_delimited_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                3 -> skip_group_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                5 -> skip_32_SetAddRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData)
             end
     end;
-dg_read_field_def_SetAddRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, element => F@_2}.
+dg_read_field_def_SetAddRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, element => F@_3}.
 
-d_field_SetAddRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetAddRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_SetAddRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+d_field_SetAddRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetAddRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetAddRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_SetAddRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+    dfp_read_field_def_SetAddRequest(RestF, 0, 0, F, NewFValue, F@_2, F@_3, TrUserData).
 
-d_field_SetAddRequest_element(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetAddRequest_element(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_SetAddRequest_element(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+d_field_SetAddRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetAddRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetAddRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_SetAddRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
+    dfp_read_field_def_SetAddRequest(RestF, 0, 0, F, F@_1, NewFValue, F@_3, TrUserData).
 
-skip_varint_SetAddRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_SetAddRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+d_field_SetAddRequest_element(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetAddRequest_element(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetAddRequest_element(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_SetAddRequest(RestF, 0, 0, F, F@_1, F@_2, NewFValue, TrUserData).
 
-skip_length_delimited_SetAddRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_SetAddRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_SetAddRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+skip_varint_SetAddRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> skip_varint_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+skip_varint_SetAddRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
+
+skip_length_delimited_SetAddRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> skip_length_delimited_SetAddRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+skip_length_delimited_SetAddRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_SetAddRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_SetAddRequest(Rest2, 0, 0, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_group_SetAddRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_SetAddRequest(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_SetAddRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_SetAddRequest(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, TrUserData).
 
-skip_32_SetAddRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_SetAddRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_64_SetAddRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_SetAddRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetAddRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-decode_msg_SetRemoveRequest(Bin, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
+decode_msg_SetRemoveRequest(Bin, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_SetRemoveRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetRemoveRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_SetRemoveRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetRemoveRequest_element(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_SetRemoveRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, element => F@_2};
-dfp_read_field_def_SetRemoveRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_SetRemoveRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_SetRemoveRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetRemoveRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetRemoveRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetRemoveRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetRemoveRequest(<<26, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_SetRemoveRequest_element(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_SetRemoveRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, element => F@_3};
+dfp_read_field_def_SetRemoveRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dg_read_field_def_SetRemoveRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-dg_read_field_def_SetRemoveRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetRemoveRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_SetRemoveRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_SetRemoveRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetRemoveRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+dg_read_field_def_SetRemoveRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_SetRemoveRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        18 -> d_field_SetRemoveRequest_element(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_SetRemoveRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        18 -> d_field_SetRemoveRequest_key(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        26 -> d_field_SetRemoveRequest_element(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                1 -> skip_64_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                2 -> skip_length_delimited_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                3 -> skip_group_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                5 -> skip_32_SetRemoveRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData)
             end
     end;
-dg_read_field_def_SetRemoveRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, element => F@_2}.
+dg_read_field_def_SetRemoveRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, element => F@_3}.
 
-d_field_SetRemoveRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetRemoveRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_SetRemoveRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+d_field_SetRemoveRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetRemoveRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetRemoveRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_SetRemoveRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+    dfp_read_field_def_SetRemoveRequest(RestF, 0, 0, F, NewFValue, F@_2, F@_3, TrUserData).
 
-d_field_SetRemoveRequest_element(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetRemoveRequest_element(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_SetRemoveRequest_element(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+d_field_SetRemoveRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetRemoveRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetRemoveRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_SetRemoveRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
+    dfp_read_field_def_SetRemoveRequest(RestF, 0, 0, F, F@_1, NewFValue, F@_3, TrUserData).
 
-skip_varint_SetRemoveRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_SetRemoveRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+d_field_SetRemoveRequest_element(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_SetRemoveRequest_element(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_SetRemoveRequest_element(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_SetRemoveRequest(RestF, 0, 0, F, F@_1, F@_2, NewFValue, TrUserData).
 
-skip_length_delimited_SetRemoveRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_SetRemoveRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_SetRemoveRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+skip_varint_SetRemoveRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> skip_varint_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+skip_varint_SetRemoveRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
+
+skip_length_delimited_SetRemoveRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> skip_length_delimited_SetRemoveRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+skip_length_delimited_SetRemoveRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_SetRemoveRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_SetRemoveRequest(Rest2, 0, 0, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_group_SetRemoveRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_SetRemoveRequest(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_SetRemoveRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_SetRemoveRequest(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, TrUserData).
 
-skip_32_SetRemoveRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_SetRemoveRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_64_SetRemoveRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_SetRemoveRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_SetRemoveRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-decode_msg_SetMembersRequest(Bin, TrUserData) -> dfp_read_field_def_SetMembersRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), TrUserData).
+decode_msg_SetMembersRequest(Bin, TrUserData) -> dfp_read_field_def_SetMembersRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_SetMembersRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> d_field_SetMembersRequest_key(Rest, Z1, Z2, F, F@_1, TrUserData);
-dfp_read_field_def_SetMembersRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1};
-dfp_read_field_def_SetMembersRequest(Other, Z1, Z2, F, F@_1, TrUserData) -> dg_read_field_def_SetMembersRequest(Other, Z1, Z2, F, F@_1, TrUserData).
+dfp_read_field_def_SetMembersRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetMembersRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_SetMembersRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_SetMembersRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_SetMembersRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2};
+dfp_read_field_def_SetMembersRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_SetMembersRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-dg_read_field_def_SetMembersRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetMembersRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-dg_read_field_def_SetMembersRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, TrUserData) ->
+dg_read_field_def_SetMembersRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_SetMembersRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+dg_read_field_def_SetMembersRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_SetMembersRequest_key(Rest, 0, 0, 0, F@_1, TrUserData);
+        10 -> d_field_SetMembersRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        18 -> d_field_SetMembersRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                1 -> skip_64_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                2 -> skip_length_delimited_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                3 -> skip_group_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                5 -> skip_32_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData)
+                0 -> skip_varint_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                1 -> skip_64_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                2 -> skip_length_delimited_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                3 -> skip_group_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                5 -> skip_32_SetMembersRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
             end
     end;
-dg_read_field_def_SetMembersRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1}.
+dg_read_field_def_SetMembersRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2}.
 
-d_field_SetMembersRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> d_field_SetMembersRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-d_field_SetMembersRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, TrUserData) ->
+d_field_SetMembersRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetMembersRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_SetMembersRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_SetMembersRequest(RestF, 0, 0, F, NewFValue, TrUserData).
+    dfp_read_field_def_SetMembersRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
 
-skip_varint_SetMembersRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> skip_varint_SetMembersRequest(Rest, Z1, Z2, F, F@_1, TrUserData);
-skip_varint_SetMembersRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+d_field_SetMembersRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_SetMembersRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_SetMembersRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_SetMembersRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
 
-skip_length_delimited_SetMembersRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> skip_length_delimited_SetMembersRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-skip_length_delimited_SetMembersRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) ->
+skip_varint_SetMembersRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_SetMembersRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+skip_varint_SetMembersRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+skip_length_delimited_SetMembersRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_SetMembersRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+skip_length_delimited_SetMembersRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_SetMembersRequest(Rest2, 0, 0, F, F@_1, TrUserData).
+    dfp_read_field_def_SetMembersRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
 
-skip_group_SetMembersRequest(Bin, _, Z2, FNum, F@_1, TrUserData) ->
+skip_group_SetMembersRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_SetMembersRequest(Rest, 0, Z2, FNum, F@_1, TrUserData).
+    dfp_read_field_def_SetMembersRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
 
-skip_32_SetMembersRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_32_SetMembersRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-skip_64_SetMembersRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_64_SetMembersRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetMembersRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
 decode_msg_SetMembersResponse(Bin, TrUserData) -> dfp_read_field_def_SetMembersResponse(Bin, 0, 0, 0, id(<<>>, TrUserData), id([], TrUserData), TrUserData).
 
@@ -2045,151 +2290,172 @@ skip_32_SetMembersResponse(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserD
 
 skip_64_SetMembersResponse(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_SetMembersResponse(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-decode_msg_CounterIncrementRequest(Bin, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(0, TrUserData), TrUserData).
+decode_msg_CounterIncrementRequest(Bin, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), id(0, TrUserData), TrUserData).
 
-dfp_read_field_def_CounterIncrementRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterIncrementRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_CounterIncrementRequest(<<16, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterIncrementRequest_amount(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_CounterIncrementRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, amount => F@_2};
-dfp_read_field_def_CounterIncrementRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_CounterIncrementRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_CounterIncrementRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterIncrementRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterIncrementRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterIncrementRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterIncrementRequest(<<24, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterIncrementRequest_amount(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterIncrementRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, amount => F@_3};
+dfp_read_field_def_CounterIncrementRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dg_read_field_def_CounterIncrementRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-dg_read_field_def_CounterIncrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterIncrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_CounterIncrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_CounterIncrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterIncrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+dg_read_field_def_CounterIncrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_CounterIncrementRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        16 -> d_field_CounterIncrementRequest_amount(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_CounterIncrementRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        18 -> d_field_CounterIncrementRequest_key(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        24 -> d_field_CounterIncrementRequest_amount(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                1 -> skip_64_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                2 -> skip_length_delimited_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                3 -> skip_group_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                5 -> skip_32_CounterIncrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData)
             end
     end;
-dg_read_field_def_CounterIncrementRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, amount => F@_2}.
+dg_read_field_def_CounterIncrementRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, amount => F@_3}.
 
-d_field_CounterIncrementRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterIncrementRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_CounterIncrementRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+d_field_CounterIncrementRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterIncrementRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterIncrementRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_CounterIncrementRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+    dfp_read_field_def_CounterIncrementRequest(RestF, 0, 0, F, NewFValue, F@_2, F@_3, TrUserData).
 
-d_field_CounterIncrementRequest_amount(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterIncrementRequest_amount(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_CounterIncrementRequest_amount(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+d_field_CounterIncrementRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterIncrementRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterIncrementRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_CounterIncrementRequest(RestF, 0, 0, F, F@_1, NewFValue, F@_3, TrUserData).
+
+d_field_CounterIncrementRequest_amount(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterIncrementRequest_amount(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterIncrementRequest_amount(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, TrUserData) ->
     {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
-    dfp_read_field_def_CounterIncrementRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
+    dfp_read_field_def_CounterIncrementRequest(RestF, 0, 0, F, F@_1, F@_2, NewFValue, TrUserData).
 
-skip_varint_CounterIncrementRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_CounterIncrementRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_varint_CounterIncrementRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> skip_varint_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+skip_varint_CounterIncrementRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_length_delimited_CounterIncrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_CounterIncrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_CounterIncrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+skip_length_delimited_CounterIncrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> skip_length_delimited_CounterIncrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+skip_length_delimited_CounterIncrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_CounterIncrementRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_CounterIncrementRequest(Rest2, 0, 0, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_group_CounterIncrementRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_CounterIncrementRequest(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_CounterIncrementRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_CounterIncrementRequest(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, TrUserData).
 
-skip_32_CounterIncrementRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_CounterIncrementRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_64_CounterIncrementRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_CounterIncrementRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterIncrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-decode_msg_CounterDecrementRequest(Bin, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(0, TrUserData), TrUserData).
+decode_msg_CounterDecrementRequest(Bin, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), id(0, TrUserData), TrUserData).
 
-dfp_read_field_def_CounterDecrementRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterDecrementRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_CounterDecrementRequest(<<16, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterDecrementRequest_amount(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-dfp_read_field_def_CounterDecrementRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, amount => F@_2};
-dfp_read_field_def_CounterDecrementRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_CounterDecrementRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+dfp_read_field_def_CounterDecrementRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterDecrementRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterDecrementRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterDecrementRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterDecrementRequest(<<24, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> d_field_CounterDecrementRequest_amount(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+dfp_read_field_def_CounterDecrementRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, amount => F@_3};
+dfp_read_field_def_CounterDecrementRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dg_read_field_def_CounterDecrementRequest(Other, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-dg_read_field_def_CounterDecrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterDecrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-dg_read_field_def_CounterDecrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+dg_read_field_def_CounterDecrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterDecrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+dg_read_field_def_CounterDecrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, F@_3, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_CounterDecrementRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
-        16 -> d_field_CounterDecrementRequest_amount(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        10 -> d_field_CounterDecrementRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        18 -> d_field_CounterDecrementRequest_key(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
+        24 -> d_field_CounterDecrementRequest_amount(Rest, 0, 0, 0, F@_1, F@_2, F@_3, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                1 -> skip_64_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                2 -> skip_length_delimited_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                3 -> skip_group_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
-                5 -> skip_32_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+                0 -> skip_varint_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                1 -> skip_64_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                2 -> skip_length_delimited_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                3 -> skip_group_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData);
+                5 -> skip_32_CounterDecrementRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, F@_3, TrUserData)
             end
     end;
-dg_read_field_def_CounterDecrementRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{key => F@_1, amount => F@_2}.
+dg_read_field_def_CounterDecrementRequest(<<>>, 0, 0, _, F@_1, F@_2, F@_3, _) -> #{bucket => F@_1, key => F@_2, amount => F@_3}.
 
-d_field_CounterDecrementRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterDecrementRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_CounterDecrementRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+d_field_CounterDecrementRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterDecrementRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterDecrementRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, F@_3, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_CounterDecrementRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+    dfp_read_field_def_CounterDecrementRequest(RestF, 0, 0, F, NewFValue, F@_2, F@_3, TrUserData).
 
-d_field_CounterDecrementRequest_amount(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterDecrementRequest_amount(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-d_field_CounterDecrementRequest_amount(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+d_field_CounterDecrementRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterDecrementRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterDecrementRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, F@_3, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_CounterDecrementRequest(RestF, 0, 0, F, F@_1, NewFValue, F@_3, TrUserData).
+
+d_field_CounterDecrementRequest_amount(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> d_field_CounterDecrementRequest_amount(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+d_field_CounterDecrementRequest_amount(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, _, TrUserData) ->
     {NewFValue, RestF} = {begin <<Res:64/signed-native>> = <<(X bsl N + Acc):64/unsigned-native>>, id(Res, TrUserData) end, Rest},
-    dfp_read_field_def_CounterDecrementRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
+    dfp_read_field_def_CounterDecrementRequest(RestF, 0, 0, F, F@_1, F@_2, NewFValue, TrUserData).
 
-skip_varint_CounterDecrementRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
-skip_varint_CounterDecrementRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_varint_CounterDecrementRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> skip_varint_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData);
+skip_varint_CounterDecrementRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_length_delimited_CounterDecrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_CounterDecrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
-skip_length_delimited_CounterDecrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+skip_length_delimited_CounterDecrementRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) when N < 57 -> skip_length_delimited_CounterDecrementRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, F@_3, TrUserData);
+skip_length_delimited_CounterDecrementRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, F@_3, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_CounterDecrementRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_CounterDecrementRequest(Rest2, 0, 0, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_group_CounterDecrementRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+skip_group_CounterDecrementRequest(Bin, _, Z2, FNum, F@_1, F@_2, F@_3, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_CounterDecrementRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+    dfp_read_field_def_CounterDecrementRequest(Rest, 0, Z2, FNum, F@_1, F@_2, F@_3, TrUserData).
 
-skip_32_CounterDecrementRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_32_CounterDecrementRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-skip_64_CounterDecrementRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+skip_64_CounterDecrementRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData) -> dfp_read_field_def_CounterDecrementRequest(Rest, Z1, Z2, F, F@_1, F@_2, F@_3, TrUserData).
 
-decode_msg_CounterValueRequest(Bin, TrUserData) -> dfp_read_field_def_CounterValueRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), TrUserData).
+decode_msg_CounterValueRequest(Bin, TrUserData) -> dfp_read_field_def_CounterValueRequest(Bin, 0, 0, 0, id(<<>>, TrUserData), id(<<>>, TrUserData), TrUserData).
 
-dfp_read_field_def_CounterValueRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> d_field_CounterValueRequest_key(Rest, Z1, Z2, F, F@_1, TrUserData);
-dfp_read_field_def_CounterValueRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1};
-dfp_read_field_def_CounterValueRequest(Other, Z1, Z2, F, F@_1, TrUserData) -> dg_read_field_def_CounterValueRequest(Other, Z1, Z2, F, F@_1, TrUserData).
+dfp_read_field_def_CounterValueRequest(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterValueRequest_bucket(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_CounterValueRequest(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> d_field_CounterValueRequest_key(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+dfp_read_field_def_CounterValueRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2};
+dfp_read_field_def_CounterValueRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dg_read_field_def_CounterValueRequest(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-dg_read_field_def_CounterValueRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterValueRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-dg_read_field_def_CounterValueRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, TrUserData) ->
+dg_read_field_def_CounterValueRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 -> dg_read_field_def_CounterValueRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+dg_read_field_def_CounterValueRequest(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 -> d_field_CounterValueRequest_key(Rest, 0, 0, 0, F@_1, TrUserData);
+        10 -> d_field_CounterValueRequest_bucket(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        18 -> d_field_CounterValueRequest_key(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
         _ ->
             case Key band 7 of
-                0 -> skip_varint_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                1 -> skip_64_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                2 -> skip_length_delimited_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                3 -> skip_group_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
-                5 -> skip_32_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, TrUserData)
+                0 -> skip_varint_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                1 -> skip_64_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                2 -> skip_length_delimited_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                3 -> skip_group_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                5 -> skip_32_CounterValueRequest(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
             end
     end;
-dg_read_field_def_CounterValueRequest(<<>>, 0, 0, _, F@_1, _) -> #{key => F@_1}.
+dg_read_field_def_CounterValueRequest(<<>>, 0, 0, _, F@_1, F@_2, _) -> #{bucket => F@_1, key => F@_2}.
 
-d_field_CounterValueRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> d_field_CounterValueRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-d_field_CounterValueRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, TrUserData) ->
+d_field_CounterValueRequest_bucket(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterValueRequest_bucket(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_CounterValueRequest_bucket(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
     {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
-    dfp_read_field_def_CounterValueRequest(RestF, 0, 0, F, NewFValue, TrUserData).
+    dfp_read_field_def_CounterValueRequest(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
 
-skip_varint_CounterValueRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> skip_varint_CounterValueRequest(Rest, Z1, Z2, F, F@_1, TrUserData);
-skip_varint_CounterValueRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+d_field_CounterValueRequest_key(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> d_field_CounterValueRequest_key(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+d_field_CounterValueRequest_key(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, _, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    dfp_read_field_def_CounterValueRequest(RestF, 0, 0, F, F@_1, NewFValue, TrUserData).
 
-skip_length_delimited_CounterValueRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> skip_length_delimited_CounterValueRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
-skip_length_delimited_CounterValueRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) ->
+skip_varint_CounterValueRequest(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> skip_varint_CounterValueRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+skip_varint_CounterValueRequest(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+skip_length_delimited_CounterValueRequest(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 -> skip_length_delimited_CounterValueRequest(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+skip_length_delimited_CounterValueRequest(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
     Length = X bsl N + Acc,
     <<_:Length/binary, Rest2/binary>> = Rest,
-    dfp_read_field_def_CounterValueRequest(Rest2, 0, 0, F, F@_1, TrUserData).
+    dfp_read_field_def_CounterValueRequest(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
 
-skip_group_CounterValueRequest(Bin, _, Z2, FNum, F@_1, TrUserData) ->
+skip_group_CounterValueRequest(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
     {_, Rest} = read_group(Bin, FNum),
-    dfp_read_field_def_CounterValueRequest(Rest, 0, Z2, FNum, F@_1, TrUserData).
+    dfp_read_field_def_CounterValueRequest(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
 
-skip_32_CounterValueRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_32_CounterValueRequest(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
-skip_64_CounterValueRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, TrUserData).
+skip_64_CounterValueRequest(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> dfp_read_field_def_CounterValueRequest(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
 
 decode_msg_CounterValueResponse(Bin, TrUserData) -> dfp_read_field_def_CounterValueResponse(Bin, 0, 0, 0, id(<<>>, TrUserData), id(0, TrUserData), TrUserData).
 
@@ -2515,10 +2781,15 @@ merge_msg_LwwEntry(PMsg, NMsg, _) ->
              {#{node_id := PFnode_id}, _} -> S3#{node_id => PFnode_id};
              _ -> S3
          end,
+    S5 = case {PMsg, NMsg} of
+             {_, #{is_tombstone := NFis_tombstone}} -> S4#{is_tombstone => NFis_tombstone};
+             {#{is_tombstone := PFis_tombstone}, _} -> S4#{is_tombstone => PFis_tombstone};
+             _ -> S4
+         end,
     case {PMsg, NMsg} of
-        {_, #{is_tombstone := NFis_tombstone}} -> S4#{is_tombstone => NFis_tombstone};
-        {#{is_tombstone := PFis_tombstone}, _} -> S4#{is_tombstone => PFis_tombstone};
-        _ -> S4
+        {_, #{expires_at := NFexpires_at}} -> S5#{expires_at => NFexpires_at};
+        {#{expires_at := PFexpires_at}, _} -> S5#{expires_at => PFexpires_at};
+        _ -> S5
     end.
 
 -compile({nowarn_unused_function,merge_msg_OrswotDots/3}).
@@ -2540,11 +2811,21 @@ merge_msg_OrswotState(PMsg, NMsg, TrUserData) ->
              {#{entries := PFentries}, _} -> S1#{entries => PFentries};
              {_, _} -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {#{clock := PFclock}, #{clock := NFclock}} -> S2#{clock => 'tr_merge_OrswotState.clock'(PFclock, NFclock, TrUserData)};
+             {_, #{clock := NFclock}} -> S2#{clock => NFclock};
+             {#{clock := PFclock}, _} -> S2#{clock => PFclock};
+             {_, _} -> S2
+         end,
+    S4 = case {PMsg, NMsg} of
+             {_, #{expires_at := NFexpires_at}} -> S3#{expires_at => NFexpires_at};
+             {#{expires_at := PFexpires_at}, _} -> S3#{expires_at => PFexpires_at};
+             _ -> S3
+         end,
     case {PMsg, NMsg} of
-        {#{clock := PFclock}, #{clock := NFclock}} -> S2#{clock => 'tr_merge_OrswotState.clock'(PFclock, NFclock, TrUserData)};
-        {_, #{clock := NFclock}} -> S2#{clock => NFclock};
-        {#{clock := PFclock}, _} -> S2#{clock => PFclock};
-        {_, _} -> S2
+        {_, #{last_modified := NFlast_modified}} -> S4#{last_modified => NFlast_modified};
+        {#{last_modified := PFlast_modified}, _} -> S4#{last_modified => PFlast_modified};
+        _ -> S4
     end.
 
 -compile({nowarn_unused_function,merge_msg_PnCounter/3}).
@@ -2556,11 +2837,21 @@ merge_msg_PnCounter(PMsg, NMsg, TrUserData) ->
              {#{p := PFp}, _} -> S1#{p => PFp};
              {_, _} -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {#{n := PFn}, #{n := NFn}} -> S2#{n => 'tr_merge_PnCounter.n'(PFn, NFn, TrUserData)};
+             {_, #{n := NFn}} -> S2#{n => NFn};
+             {#{n := PFn}, _} -> S2#{n => PFn};
+             {_, _} -> S2
+         end,
+    S4 = case {PMsg, NMsg} of
+             {_, #{expires_at := NFexpires_at}} -> S3#{expires_at => NFexpires_at};
+             {#{expires_at := PFexpires_at}, _} -> S3#{expires_at => PFexpires_at};
+             _ -> S3
+         end,
     case {PMsg, NMsg} of
-        {#{n := PFn}, #{n := NFn}} -> S2#{n => 'tr_merge_PnCounter.n'(PFn, NFn, TrUserData)};
-        {_, #{n := NFn}} -> S2#{n => NFn};
-        {#{n := PFn}, _} -> S2#{n => PFn};
-        {_, _} -> S2
+        {_, #{last_modified := NFlast_modified}} -> S4#{last_modified => NFlast_modified};
+        {#{last_modified := PFlast_modified}, _} -> S4#{last_modified => PFlast_modified};
+        _ -> S4
     end.
 
 -compile({nowarn_unused_function,merge_msg_Request/3}).
@@ -2610,32 +2901,47 @@ merge_msg_Response(PMsg, NMsg, TrUserData) ->
 merge_msg_PutRequest(PMsg, NMsg, _) ->
     S1 = #{},
     S2 = case {PMsg, NMsg} of
-             {_, #{key := NFkey}} -> S1#{key => NFkey};
-             {#{key := PFkey}, _} -> S1#{key => PFkey};
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
              _ -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {_, #{key := NFkey}} -> S2#{key => NFkey};
+             {#{key := PFkey}, _} -> S2#{key => PFkey};
+             _ -> S2
+         end,
     case {PMsg, NMsg} of
-        {_, #{value := NFvalue}} -> S2#{value => NFvalue};
-        {#{value := PFvalue}, _} -> S2#{value => PFvalue};
-        _ -> S2
+        {_, #{value := NFvalue}} -> S3#{value => NFvalue};
+        {#{value := PFvalue}, _} -> S3#{value => PFvalue};
+        _ -> S3
     end.
 
 -compile({nowarn_unused_function,merge_msg_GetRequest/3}).
 merge_msg_GetRequest(PMsg, NMsg, _) ->
     S1 = #{},
+    S2 = case {PMsg, NMsg} of
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
+             _ -> S1
+         end,
     case {PMsg, NMsg} of
-        {_, #{key := NFkey}} -> S1#{key => NFkey};
-        {#{key := PFkey}, _} -> S1#{key => PFkey};
-        _ -> S1
+        {_, #{key := NFkey}} -> S2#{key => NFkey};
+        {#{key := PFkey}, _} -> S2#{key => PFkey};
+        _ -> S2
     end.
 
 -compile({nowarn_unused_function,merge_msg_DeleteRequest/3}).
 merge_msg_DeleteRequest(PMsg, NMsg, _) ->
     S1 = #{},
+    S2 = case {PMsg, NMsg} of
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
+             _ -> S1
+         end,
     case {PMsg, NMsg} of
-        {_, #{key := NFkey}} -> S1#{key => NFkey};
-        {#{key := PFkey}, _} -> S1#{key => PFkey};
-        _ -> S1
+        {_, #{key := NFkey}} -> S2#{key => NFkey};
+        {#{key := PFkey}, _} -> S2#{key => PFkey};
+        _ -> S2
     end.
 
 -compile({nowarn_unused_function,merge_msg_OkResponse/3}).
@@ -2674,37 +2980,52 @@ merge_msg_NotFoundResponse(PMsg, NMsg, _) ->
 merge_msg_SetAddRequest(PMsg, NMsg, _) ->
     S1 = #{},
     S2 = case {PMsg, NMsg} of
-             {_, #{key := NFkey}} -> S1#{key => NFkey};
-             {#{key := PFkey}, _} -> S1#{key => PFkey};
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
              _ -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {_, #{key := NFkey}} -> S2#{key => NFkey};
+             {#{key := PFkey}, _} -> S2#{key => PFkey};
+             _ -> S2
+         end,
     case {PMsg, NMsg} of
-        {_, #{element := NFelement}} -> S2#{element => NFelement};
-        {#{element := PFelement}, _} -> S2#{element => PFelement};
-        _ -> S2
+        {_, #{element := NFelement}} -> S3#{element => NFelement};
+        {#{element := PFelement}, _} -> S3#{element => PFelement};
+        _ -> S3
     end.
 
 -compile({nowarn_unused_function,merge_msg_SetRemoveRequest/3}).
 merge_msg_SetRemoveRequest(PMsg, NMsg, _) ->
     S1 = #{},
     S2 = case {PMsg, NMsg} of
-             {_, #{key := NFkey}} -> S1#{key => NFkey};
-             {#{key := PFkey}, _} -> S1#{key => PFkey};
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
              _ -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {_, #{key := NFkey}} -> S2#{key => NFkey};
+             {#{key := PFkey}, _} -> S2#{key => PFkey};
+             _ -> S2
+         end,
     case {PMsg, NMsg} of
-        {_, #{element := NFelement}} -> S2#{element => NFelement};
-        {#{element := PFelement}, _} -> S2#{element => PFelement};
-        _ -> S2
+        {_, #{element := NFelement}} -> S3#{element => NFelement};
+        {#{element := PFelement}, _} -> S3#{element => PFelement};
+        _ -> S3
     end.
 
 -compile({nowarn_unused_function,merge_msg_SetMembersRequest/3}).
 merge_msg_SetMembersRequest(PMsg, NMsg, _) ->
     S1 = #{},
+    S2 = case {PMsg, NMsg} of
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
+             _ -> S1
+         end,
     case {PMsg, NMsg} of
-        {_, #{key := NFkey}} -> S1#{key => NFkey};
-        {#{key := PFkey}, _} -> S1#{key => PFkey};
-        _ -> S1
+        {_, #{key := NFkey}} -> S2#{key => NFkey};
+        {#{key := PFkey}, _} -> S2#{key => PFkey};
+        _ -> S2
     end.
 
 -compile({nowarn_unused_function,merge_msg_SetMembersResponse/3}).
@@ -2726,37 +3047,52 @@ merge_msg_SetMembersResponse(PMsg, NMsg, TrUserData) ->
 merge_msg_CounterIncrementRequest(PMsg, NMsg, _) ->
     S1 = #{},
     S2 = case {PMsg, NMsg} of
-             {_, #{key := NFkey}} -> S1#{key => NFkey};
-             {#{key := PFkey}, _} -> S1#{key => PFkey};
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
              _ -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {_, #{key := NFkey}} -> S2#{key => NFkey};
+             {#{key := PFkey}, _} -> S2#{key => PFkey};
+             _ -> S2
+         end,
     case {PMsg, NMsg} of
-        {_, #{amount := NFamount}} -> S2#{amount => NFamount};
-        {#{amount := PFamount}, _} -> S2#{amount => PFamount};
-        _ -> S2
+        {_, #{amount := NFamount}} -> S3#{amount => NFamount};
+        {#{amount := PFamount}, _} -> S3#{amount => PFamount};
+        _ -> S3
     end.
 
 -compile({nowarn_unused_function,merge_msg_CounterDecrementRequest/3}).
 merge_msg_CounterDecrementRequest(PMsg, NMsg, _) ->
     S1 = #{},
     S2 = case {PMsg, NMsg} of
-             {_, #{key := NFkey}} -> S1#{key => NFkey};
-             {#{key := PFkey}, _} -> S1#{key => PFkey};
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
              _ -> S1
          end,
+    S3 = case {PMsg, NMsg} of
+             {_, #{key := NFkey}} -> S2#{key => NFkey};
+             {#{key := PFkey}, _} -> S2#{key => PFkey};
+             _ -> S2
+         end,
     case {PMsg, NMsg} of
-        {_, #{amount := NFamount}} -> S2#{amount => NFamount};
-        {#{amount := PFamount}, _} -> S2#{amount => PFamount};
-        _ -> S2
+        {_, #{amount := NFamount}} -> S3#{amount => NFamount};
+        {#{amount := PFamount}, _} -> S3#{amount => PFamount};
+        _ -> S3
     end.
 
 -compile({nowarn_unused_function,merge_msg_CounterValueRequest/3}).
 merge_msg_CounterValueRequest(PMsg, NMsg, _) ->
     S1 = #{},
+    S2 = case {PMsg, NMsg} of
+             {_, #{bucket := NFbucket}} -> S1#{bucket => NFbucket};
+             {#{bucket := PFbucket}, _} -> S1#{bucket => PFbucket};
+             _ -> S1
+         end,
     case {PMsg, NMsg} of
-        {_, #{key := NFkey}} -> S1#{key => NFkey};
-        {#{key := PFkey}, _} -> S1#{key => PFkey};
-        _ -> S1
+        {_, #{key := NFkey}} -> S2#{key => NFkey};
+        {#{key := PFkey}, _} -> S2#{key => PFkey};
+        _ -> S2
     end.
 
 -compile({nowarn_unused_function,merge_msg_CounterValueResponse/3}).
@@ -2837,10 +3173,15 @@ v_msg_LwwEntry(#{} = M, Path, TrUserData) ->
         #{is_tombstone := F4} -> v_type_bool(F4, [is_tombstone | Path], TrUserData);
         _ -> ok
     end,
+    case M of
+        #{expires_at := F5} -> v_type_int64(F5, [expires_at | Path], TrUserData);
+        _ -> ok
+    end,
     lists:foreach(fun (value) -> ok;
                       (timestamp) -> ok;
                       (node_id) -> ok;
                       (is_tombstone) -> ok;
+                      (expires_at) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -2878,8 +3219,18 @@ v_msg_OrswotState(#{} = M, Path, TrUserData) ->
         #{clock := F2} -> 'v_map<string,int64>'(F2, [clock | Path], TrUserData);
         _ -> ok
     end,
+    case M of
+        #{expires_at := F3} -> v_type_int64(F3, [expires_at | Path], TrUserData);
+        _ -> ok
+    end,
+    case M of
+        #{last_modified := F4} -> v_type_int64(F4, [last_modified | Path], TrUserData);
+        _ -> ok
+    end,
     lists:foreach(fun (entries) -> ok;
                       (clock) -> ok;
+                      (expires_at) -> ok;
+                      (last_modified) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -2898,8 +3249,18 @@ v_msg_PnCounter(#{} = M, Path, TrUserData) ->
         #{n := F2} -> 'v_map<string,int64>'(F2, [n | Path], TrUserData);
         _ -> ok
     end,
+    case M of
+        #{expires_at := F3} -> v_type_int64(F3, [expires_at | Path], TrUserData);
+        _ -> ok
+    end,
+    case M of
+        #{last_modified := F4} -> v_type_int64(F4, [last_modified | Path], TrUserData);
+        _ -> ok
+    end,
     lists:foreach(fun (p) -> ok;
                       (n) -> ok;
+                      (expires_at) -> ok;
+                      (last_modified) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -2970,14 +3331,19 @@ v_submsg_PutRequest(Msg, Path, TrUserData) -> v_msg_PutRequest(Msg, Path, TrUser
 -dialyzer({nowarn_function,v_msg_PutRequest/3}).
 v_msg_PutRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
     case M of
-        #{value := F2} -> v_type_bytes(F2, [value | Path], TrUserData);
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{value := F3} -> v_type_bytes(F3, [value | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (value) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
@@ -2994,10 +3360,15 @@ v_submsg_GetRequest(Msg, Path, TrUserData) -> v_msg_GetRequest(Msg, Path, TrUser
 -dialyzer({nowarn_function,v_msg_GetRequest/3}).
 v_msg_GetRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -3013,10 +3384,15 @@ v_submsg_DeleteRequest(Msg, Path, TrUserData) -> v_msg_DeleteRequest(Msg, Path, 
 -dialyzer({nowarn_function,v_msg_DeleteRequest/3}).
 v_msg_DeleteRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -3094,14 +3470,19 @@ v_submsg_SetAddRequest(Msg, Path, TrUserData) -> v_msg_SetAddRequest(Msg, Path, 
 -dialyzer({nowarn_function,v_msg_SetAddRequest/3}).
 v_msg_SetAddRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
     case M of
-        #{element := F2} -> v_type_string(F2, [element | Path], TrUserData);
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{element := F3} -> v_type_string(F3, [element | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (element) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
@@ -3118,14 +3499,19 @@ v_submsg_SetRemoveRequest(Msg, Path, TrUserData) -> v_msg_SetRemoveRequest(Msg, 
 -dialyzer({nowarn_function,v_msg_SetRemoveRequest/3}).
 v_msg_SetRemoveRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
     case M of
-        #{element := F2} -> v_type_string(F2, [element | Path], TrUserData);
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{element := F3} -> v_type_string(F3, [element | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (element) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
@@ -3142,10 +3528,15 @@ v_submsg_SetMembersRequest(Msg, Path, TrUserData) -> v_msg_SetMembersRequest(Msg
 -dialyzer({nowarn_function,v_msg_SetMembersRequest/3}).
 v_msg_SetMembersRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -3190,14 +3581,19 @@ v_submsg_CounterIncrementRequest(Msg, Path, TrUserData) -> v_msg_CounterIncremen
 -dialyzer({nowarn_function,v_msg_CounterIncrementRequest/3}).
 v_msg_CounterIncrementRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
     case M of
-        #{amount := F2} -> v_type_int64(F2, [amount | Path], TrUserData);
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{amount := F3} -> v_type_int64(F3, [amount | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (amount) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
@@ -3214,14 +3610,19 @@ v_submsg_CounterDecrementRequest(Msg, Path, TrUserData) -> v_msg_CounterDecremen
 -dialyzer({nowarn_function,v_msg_CounterDecrementRequest/3}).
 v_msg_CounterDecrementRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
     case M of
-        #{amount := F2} -> v_type_int64(F2, [amount | Path], TrUserData);
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{amount := F3} -> v_type_int64(F3, [amount | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (amount) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
@@ -3238,10 +3639,15 @@ v_submsg_CounterValueRequest(Msg, Path, TrUserData) -> v_msg_CounterValueRequest
 -dialyzer({nowarn_function,v_msg_CounterValueRequest/3}).
 v_msg_CounterValueRequest(#{} = M, Path, TrUserData) ->
     case M of
-        #{key := F1} -> v_type_string(F1, [key | Path], TrUserData);
+        #{bucket := F1} -> v_type_string(F1, [bucket | Path], TrUserData);
         _ -> ok
     end,
-    lists:foreach(fun (key) -> ok;
+    case M of
+        #{key := F2} -> v_type_string(F2, [key | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (bucket) -> ok;
+                      (key) -> ok;
                       (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
                   end,
                   maps:keys(M)),
@@ -3506,11 +3912,19 @@ get_msg_defs() ->
       [#{name => value, fnum => 1, rnum => 2, type => bytes, occurrence => optional, opts => []},
        #{name => timestamp, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []},
        #{name => node_id, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []},
-       #{name => is_tombstone, fnum => 4, rnum => 5, type => bool, occurrence => optional, opts => []}]},
+       #{name => is_tombstone, fnum => 4, rnum => 5, type => bool, occurrence => optional, opts => []},
+       #{name => expires_at, fnum => 5, rnum => 6, type => int64, occurrence => optional, opts => []}]},
      {{msg, 'OrswotDots'}, [#{name => dots, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []}]},
      {{msg, 'OrswotState'},
-      [#{name => entries, fnum => 1, rnum => 2, type => {map, string, {msg, 'OrswotDots'}}, occurrence => repeated, opts => []}, #{name => clock, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []}]},
-     {{msg, 'PnCounter'}, [#{name => p, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []}, #{name => n, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []}]},
+      [#{name => entries, fnum => 1, rnum => 2, type => {map, string, {msg, 'OrswotDots'}}, occurrence => repeated, opts => []},
+       #{name => clock, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []},
+       #{name => expires_at, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []},
+       #{name => last_modified, fnum => 4, rnum => 5, type => int64, occurrence => optional, opts => []}]},
+     {{msg, 'PnCounter'},
+      [#{name => p, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []},
+       #{name => n, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []},
+       #{name => expires_at, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []},
+       #{name => last_modified, fnum => 4, rnum => 5, type => int64, occurrence => optional, opts => []}]},
      {{msg, 'Request'},
       [#{name => request_id, fnum => 1, rnum => 2, type => uint32, occurrence => optional, opts => []},
        #{name => body, rnum => 3,
@@ -3536,19 +3950,34 @@ get_msg_defs() ->
               #{name => counter_value, fnum => 30, rnum => 3, type => {msg, 'CounterValueResponse'}, occurrence => optional, opts => []},
               #{name => error, fnum => 50, rnum => 3, type => {msg, 'ErrorResponse'}, occurrence => optional, opts => []}],
          opts => []}]},
-     {{msg, 'PutRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => bytes, occurrence => optional, opts => []}]},
-     {{msg, 'GetRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
-     {{msg, 'DeleteRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'PutRequest'},
+      [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+       #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+       #{name => value, fnum => 3, rnum => 4, type => bytes, occurrence => optional, opts => []}]},
+     {{msg, 'GetRequest'}, [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'DeleteRequest'}, [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
      {{msg, 'OkResponse'}, [#{name => timestamp, fnum => 1, rnum => 2, type => int64, occurrence => optional, opts => []}]},
      {{msg, 'ValueResponse'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => bytes, occurrence => optional, opts => []}]},
      {{msg, 'NotFoundResponse'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
-     {{msg, 'SetAddRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => element, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
-     {{msg, 'SetRemoveRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => element, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
-     {{msg, 'SetMembersRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'SetAddRequest'},
+      [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+       #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+       #{name => element, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'SetRemoveRequest'},
+      [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+       #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+       #{name => element, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'SetMembersRequest'}, [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
      {{msg, 'SetMembersResponse'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => members, fnum => 2, rnum => 3, type => string, occurrence => repeated, opts => []}]},
-     {{msg, 'CounterIncrementRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => amount, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}]},
-     {{msg, 'CounterDecrementRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => amount, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}]},
-     {{msg, 'CounterValueRequest'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
+     {{msg, 'CounterIncrementRequest'},
+      [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+       #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+       #{name => amount, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []}]},
+     {{msg, 'CounterDecrementRequest'},
+      [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+       #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+       #{name => amount, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []}]},
+     {{msg, 'CounterValueRequest'}, [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]},
      {{msg, 'CounterValueResponse'}, [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}]},
      {{msg, 'ErrorResponse'}, [#{name => message, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => code, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}]}].
 
@@ -3622,11 +4051,19 @@ find_msg_def('LwwEntry') ->
     [#{name => value, fnum => 1, rnum => 2, type => bytes, occurrence => optional, opts => []},
      #{name => timestamp, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []},
      #{name => node_id, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []},
-     #{name => is_tombstone, fnum => 4, rnum => 5, type => bool, occurrence => optional, opts => []}];
+     #{name => is_tombstone, fnum => 4, rnum => 5, type => bool, occurrence => optional, opts => []},
+     #{name => expires_at, fnum => 5, rnum => 6, type => int64, occurrence => optional, opts => []}];
 find_msg_def('OrswotDots') -> [#{name => dots, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []}];
 find_msg_def('OrswotState') ->
-    [#{name => entries, fnum => 1, rnum => 2, type => {map, string, {msg, 'OrswotDots'}}, occurrence => repeated, opts => []}, #{name => clock, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []}];
-find_msg_def('PnCounter') -> [#{name => p, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []}, #{name => n, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []}];
+    [#{name => entries, fnum => 1, rnum => 2, type => {map, string, {msg, 'OrswotDots'}}, occurrence => repeated, opts => []},
+     #{name => clock, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []},
+     #{name => expires_at, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []},
+     #{name => last_modified, fnum => 4, rnum => 5, type => int64, occurrence => optional, opts => []}];
+find_msg_def('PnCounter') ->
+    [#{name => p, fnum => 1, rnum => 2, type => {map, string, int64}, occurrence => repeated, opts => []},
+     #{name => n, fnum => 2, rnum => 3, type => {map, string, int64}, occurrence => repeated, opts => []},
+     #{name => expires_at, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []},
+     #{name => last_modified, fnum => 4, rnum => 5, type => int64, occurrence => optional, opts => []}];
 find_msg_def('Request') ->
     [#{name => request_id, fnum => 1, rnum => 2, type => uint32, occurrence => optional, opts => []},
      #{name => body, rnum => 3,
@@ -3652,19 +4089,34 @@ find_msg_def('Response') ->
             #{name => counter_value, fnum => 30, rnum => 3, type => {msg, 'CounterValueResponse'}, occurrence => optional, opts => []},
             #{name => error, fnum => 50, rnum => 3, type => {msg, 'ErrorResponse'}, occurrence => optional, opts => []}],
        opts => []}];
-find_msg_def('PutRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => bytes, occurrence => optional, opts => []}];
-find_msg_def('GetRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
-find_msg_def('DeleteRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
+find_msg_def('PutRequest') ->
+    [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+     #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+     #{name => value, fnum => 3, rnum => 4, type => bytes, occurrence => optional, opts => []}];
+find_msg_def('GetRequest') -> [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
+find_msg_def('DeleteRequest') -> [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
 find_msg_def('OkResponse') -> [#{name => timestamp, fnum => 1, rnum => 2, type => int64, occurrence => optional, opts => []}];
 find_msg_def('ValueResponse') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => bytes, occurrence => optional, opts => []}];
 find_msg_def('NotFoundResponse') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
-find_msg_def('SetAddRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => element, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
-find_msg_def('SetRemoveRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => element, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
-find_msg_def('SetMembersRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
+find_msg_def('SetAddRequest') ->
+    [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+     #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+     #{name => element, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []}];
+find_msg_def('SetRemoveRequest') ->
+    [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+     #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+     #{name => element, fnum => 3, rnum => 4, type => string, occurrence => optional, opts => []}];
+find_msg_def('SetMembersRequest') -> [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
 find_msg_def('SetMembersResponse') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => members, fnum => 2, rnum => 3, type => string, occurrence => repeated, opts => []}];
-find_msg_def('CounterIncrementRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => amount, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}];
-find_msg_def('CounterDecrementRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => amount, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}];
-find_msg_def('CounterValueRequest') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
+find_msg_def('CounterIncrementRequest') ->
+    [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+     #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+     #{name => amount, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []}];
+find_msg_def('CounterDecrementRequest') ->
+    [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []},
+     #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []},
+     #{name => amount, fnum => 3, rnum => 4, type => int64, occurrence => optional, opts => []}];
+find_msg_def('CounterValueRequest') -> [#{name => bucket, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => key, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
 find_msg_def('CounterValueResponse') -> [#{name => key, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => value, fnum => 2, rnum => 3, type => int64, occurrence => optional, opts => []}];
 find_msg_def('ErrorResponse') -> [#{name => message, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}, #{name => code, fnum => 2, rnum => 3, type => string, occurrence => optional, opts => []}];
 find_msg_def(_) -> error.

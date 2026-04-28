@@ -73,7 +73,7 @@ teardown(Pid, Dir) ->
 
 test_put_get() ->
     {Pid, Dir} = setup(),
-    {ok, _} = gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>}}),
+    {ok, _} = gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>, ttl_seconds => 0}}),
     {value, #{found := true, val := <<"hello">>}} = gen_server:call(Pid, {get, #{key => <<"x">>}}),
     teardown(Pid, Dir).
 
@@ -84,30 +84,30 @@ test_get_missing() ->
 
 test_delete_get() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>}}),
-    gen_server:call(Pid, {delete, #{key => <<"x">>}}),
+    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>, ttl_seconds => 0}}),
+    gen_server:call(Pid, {delete, #{key => <<"x">>, ttl_seconds => 0}}),
     {value, #{found := false}} = gen_server:call(Pid, {get, #{key => <<"x">>}}),
     teardown(Pid, Dir).
 
 test_put_overwrite() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"v1">>}}),
-    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"v2">>}}),
+    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"v1">>, ttl_seconds => 0}}),
+    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"v2">>, ttl_seconds => 0}}),
     {value, #{found := true, val := <<"v2">>}} = gen_server:call(Pid, {get, #{key => <<"x">>}}),
     teardown(Pid, Dir).
 
 test_set_add_members() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {set_add, #{key => <<"s1">>, element => <<"alice">>}}),
+    gen_server:call(Pid, {set_add, #{key => <<"s1">>, element => <<"alice">>, ttl_seconds => 0}}),
     {set_members, #{members := Members}} = gen_server:call(Pid, {set_members, #{key => <<"s1">>}}),
     true = lists:member(<<"alice">>, Members),
     teardown(Pid, Dir).
 
 test_counter_inc_val() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1}}),
-    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1}}),
-    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1}}),
+    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1, ttl_seconds => 0}}),
+    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1, ttl_seconds => 0}}),
+    gen_server:call(Pid, {counter_increment, #{key => <<"c1">>, amount => 1, ttl_seconds => 0}}),
     {counter_value, #{val := 3}} = gen_server:call(Pid, {counter_value, #{key => <<"c1">>}}),
     teardown(Pid, Dir).
 
@@ -118,9 +118,9 @@ test_counter_missing() ->
 
 test_types_independent() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>}}),
-    gen_server:call(Pid, {set_add, #{key => <<"x">>, element => <<"alice">>}}),
-    gen_server:call(Pid, {counter_increment, #{key => <<"x">>, amount => 42}}),
+    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"hello">>, ttl_seconds => 0}}),
+    gen_server:call(Pid, {set_add, #{key => <<"x">>, element => <<"alice">>, ttl_seconds => 0}}),
+    gen_server:call(Pid, {counter_increment, #{key => <<"x">>, amount => 42, ttl_seconds => 0}}),
     {value, #{found := true}} = gen_server:call(Pid, {get, #{key => <<"x">>}}),
     {set_members, _} = gen_server:call(Pid, {set_members, #{key => <<"x">>}}),
     {counter_value, #{val := 42}} = gen_server:call(Pid, {counter_value, #{key => <<"x">>}}),
@@ -128,7 +128,7 @@ test_types_independent() ->
 
 test_sync_merge() ->
     {Pid, Dir} = setup(),
-    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"local">>}}),
+    gen_server:call(Pid, {put, #{key => <<"x">>, value => <<"local">>, ttl_seconds => 0}}),
     RemoteEntry = #{value => <<"remote">>, timestamp => 99999, node_id => remote},
     RemoteStore = #{<<"y">> => RemoteEntry},
     gen_server:cast(Pid, {lww_sync, #{remote_lww_store => RemoteStore}}),

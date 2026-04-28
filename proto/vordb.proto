@@ -8,6 +8,7 @@ message LwwEntry {
   int64 timestamp = 2;
   string node_id = 3;
   bool is_tombstone = 4;
+  int64 expires_at = 5;       // 0 = no expiration
 }
 
 message OrswotDots {
@@ -17,11 +18,15 @@ message OrswotDots {
 message OrswotState {
   map<string, OrswotDots> entries = 1;
   map<string, int64> clock = 2;
+  int64 expires_at = 3;       // 0 = no expiration
+  int64 last_modified = 4;
 }
 
 message PnCounter {
   map<string, int64> p = 1;
   map<string, int64> n = 2;
+  int64 expires_at = 3;       // 0 = no expiration
+  int64 last_modified = 4;
 }
 
 // Client protocol
@@ -54,16 +59,19 @@ message Response {
 }
 
 message PutRequest {
-  string key = 1;
-  bytes value = 2;
+  string bucket = 1;
+  string key = 2;
+  bytes value = 3;
 }
 
 message GetRequest {
-  string key = 1;
+  string bucket = 1;
+  string key = 2;
 }
 
 message DeleteRequest {
-  string key = 1;
+  string bucket = 1;
+  string key = 2;
 }
 
 message OkResponse {
@@ -80,17 +88,20 @@ message NotFoundResponse {
 }
 
 message SetAddRequest {
-  string key = 1;
-  string element = 2;
+  string bucket = 1;
+  string key = 2;
+  string element = 3;
 }
 
 message SetRemoveRequest {
-  string key = 1;
-  string element = 2;
+  string bucket = 1;
+  string key = 2;
+  string element = 3;
 }
 
 message SetMembersRequest {
-  string key = 1;
+  string bucket = 1;
+  string key = 2;
 }
 
 message SetMembersResponse {
@@ -99,17 +110,20 @@ message SetMembersResponse {
 }
 
 message CounterIncrementRequest {
-  string key = 1;
-  int64 amount = 2;
+  string bucket = 1;
+  string key = 2;
+  int64 amount = 3;
 }
 
 message CounterDecrementRequest {
-  string key = 1;
-  int64 amount = 2;
+  string bucket = 1;
+  string key = 2;
+  int64 amount = 3;
 }
 
 message CounterValueRequest {
-  string key = 1;
+  string bucket = 1;
+  string key = 2;
 }
 
 message CounterValueResponse {

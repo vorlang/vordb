@@ -56,20 +56,23 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.dirty_confirm_ack(vnode_id: integer, peer: atom, seq: integer) :: atom
     Erlang.vordb_ffi.gossip_send_vnode_deltas(node_id: atom, vnode_id: integer) :: atom
     Erlang.vordb_ffi.system_time_ms() :: integer
+    Erlang.vordb_ffi.compute_expires_at(timestamp: integer, ttl_seconds: integer) :: integer
+    Erlang.vordb_cache.put_set_ttl(vnode_id: integer, key: binary, expires_at: integer) :: atom
+    Erlang.vordb_cache.put_counter_ttl(vnode_id: integer, key: binary, expires_at: integer) :: atom
   end
 
   protocol do
-    accepts {:put, key: binary, value: binary}
+    accepts {:put, key: binary, value: binary, ttl_seconds: integer}
     accepts {:get, key: binary}
-    accepts {:delete, key: binary}
+    accepts {:delete, key: binary, ttl_seconds: integer}
     accepts {:lww_sync, remote_lww_store: map}
 
     emits {:ok, timestamp: integer}
     emits {:value, key: binary, val: binary, found: atom}
     emits {:deleted, key: binary, timestamp: integer}
 
-    accepts {:set_add, key: binary, element: binary}
-    accepts {:set_remove, key: binary, element: binary}
+    accepts {:set_add, key: binary, element: binary, ttl_seconds: integer}
+    accepts {:set_remove, key: binary, element: binary, ttl_seconds: integer}
     accepts {:set_members, key: binary}
     accepts {:set_sync, remote_set_store: map}
 
@@ -77,8 +80,8 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emits {:set_members, key: binary, members: list}
     emits {:set_not_found, key: binary}
 
-    accepts {:counter_increment, key: binary, amount: integer} where amount > 0
-    accepts {:counter_decrement, key: binary, amount: integer} where amount > 0
+    accepts {:counter_increment, key: binary, amount: integer, ttl_seconds: integer} where amount > 0
+    accepts {:counter_decrement, key: binary, amount: integer, ttl_seconds: integer} where amount > 0
     accepts {:counter_value, key: binary}
     accepts {:counter_sync, remote_counter_store: map}
 
@@ -112,12 +115,14 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_cache.load_counters(vnode_id: vnode_id, entries: counters)
   end
 
-  on {:put, key: K, value: V} do
+  on {:put, key: K, value: V, ttl_seconds: TTL} do
     ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
     entry = Erlang.vordb_ffi.entry_new(value: V, timestamp: ts, node_id: node_id)
-    transition lww_store: map_put(lww_store, K, entry)
-    Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: entry)
-    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: entry)
+    full_entry = map_put(entry, :expires_at, exp)
+    transition lww_store: map_put(lww_store, K, full_entry)
+    Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: full_entry)
+    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: full_entry)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :lww, key: K)
     emit {:ok, timestamp: ts}
   end
@@ -129,12 +134,14 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     emit {:value, key: K, val: v, found: f}
   end
 
-  on {:delete, key: K} do
+  on {:delete, key: K, ttl_seconds: TTL} do
     ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
     entry = Erlang.vordb_ffi.entry_tombstone(timestamp: ts, node_id: node_id)
-    transition lww_store: map_put(lww_store, K, entry)
-    Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: entry)
-    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: entry)
+    full_entry = map_put(entry, :expires_at, exp)
+    transition lww_store: map_put(lww_store, K, full_entry)
+    Erlang.vordb_ffi.storage_put_lww(vnode_id: vnode_id, key: K, value: full_entry)
+    Erlang.vordb_cache.put_lww(vnode_id: vnode_id, key: K, value: full_entry)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :lww, key: K)
     emit {:deleted, key: K, timestamp: ts}
   end
@@ -146,22 +153,28 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :lww, keys: R)
   end
 
-  on {:set_add, key: K, element: E} do
+  on {:set_add, key: K, element: E, ttl_seconds: TTL} do
     current = vordb/or_set.get_or_empty(store: set_store, key: K)
     updated = vordb/or_set.add_element(state: current, element: E, node_id: node_id)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_cache.put_set(vnode_id: vnode_id, key: K, value: updated)
+    ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
+    Erlang.vordb_cache.put_set_ttl(vnode_id: vnode_id, key: K, expires_at: exp)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
 
-  on {:set_remove, key: K, element: E} do
+  on {:set_remove, key: K, element: E, ttl_seconds: TTL} do
     current = vordb/or_set.get_or_empty(store: set_store, key: K)
     updated = vordb/or_set.remove_element(state: current, element: E)
     transition set_store: map_put(set_store, K, updated)
     Erlang.vordb_ffi.storage_put_set(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_cache.put_set(vnode_id: vnode_id, key: K, value: updated)
+    ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
+    Erlang.vordb_cache.put_set_ttl(vnode_id: vnode_id, key: K, expires_at: exp)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :set, key: K)
     emit {:set_ok}
   end
@@ -185,22 +198,28 @@ agent KvStore(node_id: atom, vnode_id: integer, sync_interval_ms: integer) do
     Erlang.vordb_ffi.dirty_mark_keys(vnode_id: vnode_id, type: :set, keys: R)
   end
 
-  on {:counter_increment, key: K, amount: A} do
+  on {:counter_increment, key: K, amount: A, ttl_seconds: TTL} do
     current = vordb/counter.get_or_empty(store: counter_store, key: K)
     updated = vordb/counter.increment(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_cache.put_counter(vnode_id: vnode_id, key: K, value: updated)
+    ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
+    Erlang.vordb_cache.put_counter_ttl(vnode_id: vnode_id, key: K, expires_at: exp)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
 
-  on {:counter_decrement, key: K, amount: A} do
+  on {:counter_decrement, key: K, amount: A, ttl_seconds: TTL} do
     current = vordb/counter.get_or_empty(store: counter_store, key: K)
     updated = vordb/counter.decrement(counter: current, node_id: node_id, amount: A)
     transition counter_store: map_put(counter_store, K, updated)
     Erlang.vordb_ffi.storage_put_counter(vnode_id: vnode_id, key: K, value: updated)
     Erlang.vordb_cache.put_counter(vnode_id: vnode_id, key: K, value: updated)
+    ts = Erlang.vordb_ffi.system_time_ms()
+    exp = Erlang.vordb_ffi.compute_expires_at(timestamp: ts, ttl_seconds: TTL)
+    Erlang.vordb_cache.put_counter_ttl(vnode_id: vnode_id, key: K, expires_at: exp)
     Erlang.vordb_ffi.dirty_mark(vnode_id: vnode_id, type: :counter, key: K)
     emit {:counter_ok}
   end
