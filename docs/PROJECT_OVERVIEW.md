@@ -130,15 +130,11 @@ Simple key-value. Each entry: `{value, timestamp, node_id}`. Concurrent writes r
 
 **Merge:** Vor-native `map_merge(:lww)` — compile-time verified.
 
-**API:** `PUT /kv/:key`, `GET /kv/:key`, `DELETE /kv/:key`
-
 ### ORSWOT (Optimized OR-Set Without Tombstones)
 
 Set with add/remove. Concurrent add and remove resolves in favor of add (add-wins). Uses vector clock (dot-based tracking) instead of tombstones — space is O(elements × nodes) regardless of operation count.
 
 **Merge:** Gleam extern — property-tested (commutativity, associativity, idempotency).
-
-**API:** `POST /set/:key/add`, `POST /set/:key/remove`, `GET /set/:key`
 
 ### PN-Counter (Positive-Negative Counter)
 
@@ -146,7 +142,50 @@ Increment and decrement counter. Implemented as pair of G-Counters (positive and
 
 **Merge:** Gleam extern — property-tested. Inner operation is max per node per side.
 
-**API:** `POST /counter/:key/increment`, `POST /counter/:key/decrement`, `GET /counter/:key`
+---
+
+## Buckets
+
+Buckets are named collections of keys with per-bucket configuration. Each bucket has a fixed CRDT type, an optional TTL, an optional replication factor, and an optional consistency level.
+
+```
+bucket "user_profiles"   → type: lww,        ttl: none,  consistency: eventual
+bucket "message_inbox"   → type: orswot,     ttl: 30d,   consistency: session
+bucket "page_views"      → type: pn_counter, ttl: 90d,   consistency: eventual
+```
+
+The bucket determines the CRDT type — the client doesn't need to know whether a key is LWW or a set. Mismatched operations (e.g., `set_add` on an LWW bucket) are rejected at the API level.
+
+Legacy endpoints (`/kv/:key`, `/set/:key`, `/counter/:key`) route to auto-created default buckets for backward compatibility.
+
+**API:** `POST /buckets`, `GET /buckets`, `DELETE /buckets/:name`, `PUT /bucket/:name/:key`, etc.
+
+### TTL (Time-To-Live)
+
+Per-bucket automatic key expiration. Writes reset the TTL — active data doesn't expire, only idle data does. Expired keys are filtered on read and purged by a background sweep process.
+
+TTL is stored as `expires_at` in the entry. Gossip still sends expired entries (clock skew safety) — each node filters on read using its own clock.
+
+---
+
+## Consistency Model
+
+VorDB offers tunable consistency per bucket via W (write quorum) and R (read quorum). The coordinator waits for W write acknowledgments before returning success, and queries R replicas for reads.
+
+| Preset | W | R | Behavior |
+|---|---|---|---|
+| `eventual` | 1 | 1 | Fastest. Write confirmed locally, read from one replica. Default. |
+| `session` | 2 | 1 | Write confirmed by majority. Reads may lag. |
+| `consistent` | 2 | 2 | Strong consistency (W+R > N with N=3). Higher latency. |
+| `paranoid` | 3 | 3 | All replicas must agree. Any failure blocks operations. |
+
+W=1 and R=1 use optimized fast paths — zero quorum overhead, identical to pre-quorum behavior.
+
+When W + R > N, at least one replica in the read set has seen the latest write, guaranteeing read-your-writes consistency.
+
+### Read Repair
+
+When a quorum read (R > 1) detects that replicas disagree, the coordinator automatically sends the merged value to stale replicas. Repair is asynchronous — it doesn't block the read response. The repair uses the same sync message path as gossip (CRDT merge in the Vor agent), so no agent changes were needed.
 
 ---
 
@@ -237,8 +276,10 @@ The agent is a gen_server parameterized with `node_id`, `vnode_id`, and `sync_in
 - The ring, partition assignment, or cluster topology
 - Which node is primary, which are replicas
 - Handoff, ring gossip, or membership changes
+- Buckets, TTL, or quorum levels
 - HTTP or TCP protocols
 - ETS reads (reads bypass the agent entirely)
+- Read repair (repair sends sync messages — the agent just merges as usual)
 
 The agent is a pure CRDT state machine. Everything distributed is built around it without its knowledge.
 
@@ -281,9 +322,11 @@ The agent is a pure CRDT state machine. Everything distributed is built around i
 | vordb_ffi | `src/vordb_ffi.erl` | Main FFI: storage, CRDT helpers, Vor agent calls |
 | vordb_cache | `src/vordb_cache.erl` | ETS read cache |
 | vordb_dirty_ffi | `src/vordb_dirty_ffi.erl` | ETS dirty tracking operations |
-| vordb_ring_manager | `src/vordb_ring_manager.erl` | Ring state GenServer |
+| vordb_ring_manager | `src/vordb_ring_manager.erl` | Ring state (persistent_term for reads, GenServer for writes) |
 | vordb_ring_gossip | `src/vordb_ring_gossip.erl` | Ring distribution (periodic + broadcast) |
-| vordb_coordinator | `src/vordb_coordinator.erl` | Write fan-out, read routing |
+| vordb_coordinator | `src/vordb_coordinator.erl` | Write fan-out, read routing, bucket dispatch |
+| vordb_quorum | `src/vordb_quorum.erl` | Parallel W-quorum writes, R-quorum reads, read repair |
+| vordb_bucket_registry | `src/vordb_bucket_registry.erl` | Bucket CRUD, persistent_term cache, bucket gossip |
 | vordb_handoff | `src/vordb_handoff.erl` | Partition data transfer |
 | vordb_tcp | `src/vordb_tcp.erl` | Binary TCP server |
 | vordb_metrics | `src/vordb_metrics.erl` | Telemetry handlers, Prometheus formatter |
@@ -305,7 +348,8 @@ VorDB.Application
         ├── VorDB.Metrics             # Telemetry ETS + handler registration
         ├── VorDB.Storage             # RocksDB (column families)
         ├── VorDB.Cluster             # Peer discovery
-        ├── VorDB.RingManager         # Ring state + persistence
+        ├── VorDB.RingManager         # Ring state + persistence (persistent_term)
+        ├── VorDB.BucketRegistry      # Bucket configs (persistent_term)
         ├── VorDB.DirtyTracker (ETS)  # Init ETS tables (no GenServer)
         ├── VorDB.VnodeRegistry       # OTP Registry for vnode lookup
         ├── VorDB.VnodeSupervisor     # Dynamic — starts/stops vnodes per ring
@@ -329,17 +373,45 @@ Start order matters — each child depends on earlier children being available.
 
 ### HTTP REST
 
+**Bucket Management:**
+
 | Method | Endpoint | Description |
 |---|---|---|
-| `PUT /kv/:key` | Write LWW value | Body: `{"value": "..."}` |
-| `GET /kv/:key` | Read LWW value | Returns value or 404 |
-| `DELETE /kv/:key` | Delete LWW key | Tombstone write |
-| `POST /set/:key/add` | Add set element | Body: `{"element": "..."}` |
-| `POST /set/:key/remove` | Remove set element | Body: `{"element": "..."}` |
-| `GET /set/:key` | List set members | Returns member list or 404 |
-| `POST /counter/:key/increment` | Increment counter | Body: `{"amount": 1}` (optional) |
-| `POST /counter/:key/decrement` | Decrement counter | Body: `{"amount": 1}` (optional) |
-| `GET /counter/:key` | Get counter value | Returns integer value or 404 |
+| `POST /buckets` | Create bucket | `{"name": "...", "type": "lww|orswot|pn_counter", "ttl_seconds": N, "consistency": "..."}` |
+| `GET /buckets` | List all buckets | |
+| `GET /buckets/:name` | Get bucket config | |
+| `DELETE /buckets/:name` | Delete bucket and data | |
+
+**Data Operations (Bucket API):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `PUT /bucket/:bucket/:key` | Write value | Body: `{"value": "..."}` |
+| `GET /bucket/:bucket/:key` | Read value | Returns value or 404 |
+| `DELETE /bucket/:bucket/:key` | Delete value | Tombstone write |
+| `POST /bucket/:bucket/:key/add` | Add set element | Body: `{"element": "..."}` |
+| `POST /bucket/:bucket/:key/remove` | Remove set element | Body: `{"element": "..."}` |
+| `POST /bucket/:bucket/:key/increment` | Increment counter | Body: `{"amount": 1}` (optional) |
+| `POST /bucket/:bucket/:key/decrement` | Decrement counter | Body: `{"amount": 1}` (optional) |
+
+**Legacy Endpoints (Default Buckets):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `PUT /kv/:key` | Write LWW value | Routes to `__default_lww__` bucket |
+| `GET /kv/:key` | Read LWW value | |
+| `DELETE /kv/:key` | Delete LWW key | |
+| `POST /set/:key/add` | Add set element | Routes to `__default_set__` bucket |
+| `POST /set/:key/remove` | Remove set element | |
+| `GET /set/:key` | List set members | |
+| `POST /counter/:key/increment` | Increment counter | Routes to `__default_counter__` bucket |
+| `POST /counter/:key/decrement` | Decrement counter | |
+| `GET /counter/:key` | Get counter value | |
+
+**Cluster & Operations:**
+
+| Method | Endpoint | Description |
+|---|---|---|
 | `GET /status` | Node status | Node info, peers, vnodes |
 | `POST /admin/join` | Join cluster | Body: `{"seed_node": "..."}` |
 | `POST /admin/leave` | Leave cluster | |
@@ -422,7 +494,11 @@ seed_nodes = []                 # Seed nodes for dynamic join
 
 # Ring
 ring_size = 256                 # Partitions (immutable after cluster creation)
-replication_n = 3               # Replicas per key
+replication_n = 3               # Replicas per key (cluster default)
+
+# Consistency (cluster defaults, overridable per bucket)
+default_write_quorum = 1        # W — write ACKs before success
+default_read_quorum = 1         # R — read responses before returning
 
 # Gossip
 sync_interval_ms = 1000         # Delta gossip interval per vnode
@@ -433,9 +509,17 @@ data_dir = "data/{node_id}"
 cf_write_buffer_size_mb = 4     # Memtable per column family
 block_cache_size_mb = 512       # Shared block cache
 
+# TTL
+default_ttl_seconds = 0         # 0 = no expiration (cluster default)
+ttl_sweep_interval_seconds = 60 # Sweep one partition per interval
+
 # TCP
 tcp_max_connections = 1000
 tcp_max_message_size_mb = 16
+
+# Quorum timeouts
+write_quorum_timeout_ms = 5000
+read_quorum_timeout_ms = 3000
 
 # Operations
 fresh_start = false             # Delete data on startup (dev only)
@@ -461,11 +545,13 @@ make test-integration
 | Pure CRDT modules | ~30 | ORSWOT, PN-Counter, LWW entry logic |
 | Storage | ~6 | RocksDB round-trip, column families, partition isolation |
 | KvStore agent | ~9 | CRUD through Vor agent, sync/merge, state recovery |
-| HTTP endpoints | ~16 | All REST routes, error handling |
+| HTTP endpoints | ~16 | All REST routes, bucket API, legacy endpoints, error handling |
 | TCP protocol | ~8 | All binary protocol operations, framing, error handling |
 | DirtyTracker | ~7 | ETS dirty tracking, ACKs, partition lifecycle |
 | Ring | ~26 | Construction, partitioning, preference lists, diffing, serialization |
-| Metrics | TBD | Telemetry emission, Prometheus format |
+| Buckets & TTL | ~10 | Bucket CRUD, type validation, TTL expiration, sweep |
+| Quorum & Read Repair | ~8 | W/R quorum, read merging, stale replica repair |
+| Metrics | ~5 | Telemetry emission, Prometheus format |
 | Property suites | 15 | CRDT merge commutativity, associativity, idempotency (×3 types, ×5 properties) |
 | Integration | ~11 | Multi-node gossip, convergence, restart, partition recovery |
 
@@ -520,7 +606,7 @@ GAP-013 and GAP-014 are blocked on Vor gaining map iteration capabilities. The v
 |---|---|---|
 | SCALE-001 | Open (Medium) | Merge in externs — same as GAP-013/014 |
 | SCALE-006 | Open (Low) | term_to_binary for storage — blocks cross-language RocksDB tools |
-| SCALE-007 | Open (Low) | No type enforcement per key — Redis model, arguably correct |
+| ~~SCALE-007~~ | Resolved | Buckets enforce per-key CRDT type |
 | SCALE-011 | Open (Low) | Hot partitions — operational tuning |
 | SCALE-012 | Open (Low) | Ring churn — rate-limit ring changes |
 | SCALE-013 | Open (Low) | Handoff bandwidth — throttle when needed |
@@ -538,8 +624,10 @@ No architectural blockers. All remaining items are operational tuning or Vor lan
 | Gleam migration | Type safety for AI contributors | All Elixir replaced with Gleam + Erlang FFI |
 | Phase 2 | "It scales" | Consistent hashing ring, partial replication, replicated writes, handoff, ring gossip |
 | Phase 3 | "It's production-ready" | ORSWOT, ETS reads, column families, ETS DirtyTracker, protobuf TCP, telemetry |
+| Core features | "It's a real product" | Buckets, TTL, tunable W/R quorum, read repair, consistency presets |
+| Benchmarking | Performance characterization | Baseline numbers, eprof profiling, persistent_term optimization |
 
-The Vor agent at the core is unchanged from Phase 0 through Phase 3. Every phase added infrastructure around it.
+The Vor agent at the core is unchanged from Phase 0 through all subsequent phases. Every feature added infrastructure around it.
 
 ---
 
