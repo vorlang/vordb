@@ -42,6 +42,16 @@ attach_handlers() ->
     telemetry:attach(<<"vordb.gossip.delta.sent">>,
         [vordb, gossip, delta, sent],
         fun handle_counter_event/4, #{name => vordb_gossip_delta_sent}),
+    %% Vor auto-generated telemetry — fires from inside the compiled KvStore agent
+    telemetry:attach(<<"vor.message.received">>,
+        [vor, message, received],
+        fun handle_vor_message/4, #{}),
+    telemetry:attach(<<"vor.transition">>,
+        [vor, transition],
+        fun handle_vor_transition/4, #{}),
+    telemetry:attach(<<"vor.constraint.violated">>,
+        [vor, constraint, violated],
+        fun handle_vor_constraint_violated/4, #{}),
     ok.
 
 handle_request_stop(_Event, #{duration := Duration}, #{operation := Op, protocol := Proto, status := Status}, _Config) ->
@@ -54,6 +64,22 @@ handle_request_stop(_Event, #{duration := Duration}, #{operation := Op, protocol
 handle_counter_event(_Event, #{count := N}, Meta, #{name := Name}) ->
     Tags = maps:to_list(Meta),
     inc_counter({Name, Tags}, N).
+
+%% Vor auto-generated telemetry handlers.
+%% These fire from inside the compiled Vor agent on every message and transition.
+%% Tags are low-cardinality (agent name, message tag, field name).
+
+handle_vor_message(_Event, _Measurements, Meta, _Config) ->
+    Tag = maps:get(tag, Meta, unknown),
+    inc_counter({vor_messages_received, Tag}, 1).
+
+handle_vor_transition(_Event, _Measurements, Meta, _Config) ->
+    Field = maps:get(field, Meta, unknown),
+    inc_counter({vor_transitions, Field}, 1).
+
+handle_vor_constraint_violated(_Event, _Measurements, Meta, _Config) ->
+    Tag = maps:get(message_tag, Meta, maps:get(tag, Meta, unknown)),
+    inc_counter({vor_constraints_violated, Tag}, 1).
 
 %% ===== Manual Emit =====
 
@@ -160,6 +186,19 @@ format_entries(Entries) ->
                     a2b(Type), <<"\"} ">>, integer_to_binary(Val), <<"\n">>]};
         ({{gauge, Name}, Val}) ->
             {true, [<<"vordb_">>, a2b(Name), <<" ">>, integer_to_binary(Val), <<"\n">>]};
+        %% Vor auto-generated telemetry
+        ({{vor_messages_received, Tag}, Val}) ->
+            {true, [<<"vor_messages_received_total{tag=\"">>,
+                    a2b(Tag), <<"\"} ">>,
+                    integer_to_binary(Val), <<"\n">>]};
+        ({{vor_transitions, Field}, Val}) ->
+            {true, [<<"vor_transitions_total{field=\"">>,
+                    a2b(Field), <<"\"} ">>,
+                    integer_to_binary(Val), <<"\n">>]};
+        ({{vor_constraints_violated, Tag}, Val}) ->
+            {true, [<<"vor_constraints_violated_total{tag=\"">>,
+                    a2b(Tag), <<"\"} ">>,
+                    integer_to_binary(Val), <<"\n">>]};
         (_) -> false
     end, Entries).
 

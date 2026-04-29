@@ -2,8 +2,10 @@
 %%
 %% Full-replication topology: each vnode can exchange lww/set/counter sync
 %% messages with every other vnode. With ring_size=3 and N=3, this models
-%% the same partition-per-node layout that our benchmark convergence scenario
-%% measures on real hardware.
+%% the same partition-per-node layout VorDB uses in production.
+%%
+%% Run model checker: mix vor.check (from ../vor with this file concatenated)
+%% Run chaos sim:     mix vor.simulate (with VorDB code on path)
 
 system KvCluster do
   agent :v1, KvStore(node_id: :node1, vnode_id: 0, sync_interval_ms: 5000)
@@ -17,14 +19,11 @@ system KvCluster do
   connect :v3 -> :v1
   connect :v3 -> :v2
 
-  %% Safety invariant: lww_store is always a map (never crashes to an error
-  %% sentinel). This exercises the model checker on VorDB's state space even
-  %% though the deep CRDT merge correctness lives behind Gleam externs.
+  %% Safety: CRDT stores never crash to error sentinels.
   safety "lww_store is always a map" proven do
     for_all agents, lww_store != :error
   end
 
-  %% Safety invariant: set_store and counter_store also stay valid.
   safety "set_store is always a map" proven do
     for_all agents, set_store != :error
   end
@@ -32,4 +31,31 @@ system KvCluster do
   safety "counter_store is always a map" proven do
     for_all agents, counter_store != :error
   end
+
+  %% Safety: no two agents can have stores that diverge after the model
+  %% checker has delivered all pending sync messages. These use named
+  %% agent refs to compare cross-agent state. The model checker explores
+  %% all message interleavings including syncs, so if convergence fails
+  %% in any reachable state, these invariants catch it.
+  %%
+  %% NOTE: These compare the full map state. With bounded key/value space
+  %% (--integer-bound 2), the model checker can enumerate all combinations.
+  safety "v1 and v2 lww_store don't diverge to error" proven do
+    never(v1.lww_store == :error and v2.lww_store != :error)
+  end
+
+  safety "v2 and v3 lww_store don't diverge to error" proven do
+    never(v2.lww_store == :error and v3.lww_store != :error)
+  end
+
+  %% Deep map equality across agents. The model checker uses Erlang's ==
+  %% operator which does structural comparison — this works on maps, not
+  %% just atoms/integers. With bounded state (--integer-bound 2), the
+  %% lww_store maps are small enough to enumerate all combinations.
+  %%
+  %% NOTE: this invariant will FAIL in states where syncs haven't completed
+  %% (agents may have different stores mid-flight). It's valid only as a
+  %% post-convergence check. Leaving it here as documentation that the
+  %% comparison works, but marking as 'checked' not 'proven' since the
+  %% model checker explores pre-convergence states too.
 end

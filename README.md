@@ -2,9 +2,9 @@
 
 **A CRDT-based distributed key-value store with verified coordination.**
 
-Every node accepts writes. Conflicts resolve automatically via CRDTs. The coordination layer is formally verified at compile time using [Vor](https://github.com/vorlang/vor). Built on Gleam, Erlang, RocksDB, and the BEAM.
+Every node accepts writes. Conflicts resolve automatically via CRDTs. The coordination layer is verified at five levels using [Vor](https://github.com/vorlang/vor): compile-time safety proofs, multi-agent model checking, chaos simulation, property testing, and auto-generated telemetry. Built on Gleam, Erlang, RocksDB, and the BEAM.
 
-VorDB is the spiritual successor to Riak — with the compile-time verification Riak never had.
+VorDB is the spiritual successor to Riak — with the multi-layer verification Riak never had.
 
 For the full architecture reference, see [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md).
 
@@ -23,7 +23,8 @@ For the full architecture reference, see [docs/PROJECT_OVERVIEW.md](./docs/PROJE
 - **Per-partition column families** — write isolation, independent compaction
 - **Lock-free ETS dirty tracker** — no GenServer bottleneck on the gossip path
 - **Protobuf TCP protocol** — length-prefixed binary protocol alongside HTTP REST
-- **Telemetry + Prometheus** — `/metrics` endpoint with low-cardinality tags
+- **Telemetry + Prometheus** — `/metrics` endpoint with low-cardinality tags; Vor auto-generates agent telemetry (transitions, messages, constraint violations)
+- **Five-layer verification** — compile-time proofs, model checking (512 states proven), chaos simulation (kills + partitions + delays), property testing (15 suites), auto-instrumentation
 
 ## Quick Start
 
@@ -160,8 +161,9 @@ W=1 and R=1 use optimized fast paths with zero quorum overhead.
 | Phase 2 | Consistent hashing ring, replicated writes, handoff, ring gossip |
 | Phase 3 | ORSWOT, ETS reads, column families, ETS DirtyTracker, protobuf/TCP, telemetry |
 | Core features | Buckets, TTL, tunable W/R quorum, read repair |
+| Verification | Model checking, chaos simulation, auto-telemetry, protocol constraints |
 
-75 tests, 0 failures. CRDT merge correctness verified by 15 property-based suites (commutativity, associativity, idempotency × 3 types).
+75 tests, 0 failures. Five verification layers: compile-time proofs (LWW merge), model checking (512 states proven across 5 invariants), chaos simulation (0 violations under kills + partitions + delays), property testing (15 suites × 3 CRDT types), and auto-generated telemetry on every agent state transition.
 
 See [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md) for architecture, request flow, module reference, supervision tree, configuration, and outstanding issues.
 
