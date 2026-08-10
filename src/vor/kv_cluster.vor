@@ -1,11 +1,21 @@
 %% VorDB KvCluster — 3-vnode system block for model checking and chaos simulation.
 %%
-%% Full-replication topology: each vnode can exchange lww/set/counter sync
-%% messages with every other vnode. With ring_size=3 and N=3, this models
-%% the same partition-per-node layout VorDB uses in production.
+%% Run model checker: make verify-check   (concatenates kv_store.vor + this file)
+%% Run chaos sim:     make verify-chaos   (full-stack: RocksDB + ETS started first)
 %%
-%% Run model checker: mix vor.check (from ../vor with this file concatenated)
-%% Run chaos sim:     mix vor.simulate (with VorDB code on path)
+%% READ THIS BEFORE TRUSTING A GREEN RESULT — see docs/VERIFICATION_AUDIT_2026-08.md.
+%%
+%% The `connect` edges below are DECORATIVE at the model-checking tier. KvStore
+%% contains no `send` and no `broadcast`: every inter-vnode message VorDB
+%% actually exchanges (lww_sync / set_sync / counter_sync) is produced by
+%% `Erlang.vordb_ffi.gossip_send_vnode_deltas`, an extern, from the `every`
+%% timer. The explorer does not model externs, so no agent ever puts a message
+%% on the wire and the topology carries nothing. `mix vor.check` explores
+%% exactly ONE state at depth 0 (F-004). Replication is not verified here.
+%%
+%% All three state fields are maps, and the explorer abstracts map operations to
+%% `:unknown` (Vor KNOWN_ISSUES §5), so CRDT content is invisible to the checker
+%% regardless. What survives is only what these sentinel invariants say.
 
 system KvCluster do
   agent :v1, KvStore(node_id: :node1, vnode_id: 0, sync_interval_ms: 5000)
@@ -19,43 +29,53 @@ system KvCluster do
   connect :v3 -> :v1
   connect :v3 -> :v2
 
-  %% Safety: CRDT stores never crash to error sentinels.
-  safety "lww_store is always a map" proven do
+  %% Sentinel invariants: a store field never holds the bare atom `:error`.
+  %%
+  %% Named for what they actually test. They do NOT assert "is a map" — a store
+  %% holding an extern-error tuple, a stale map, or a divergent map satisfies
+  %% all three. Demonstrated: a chaos run with no VorDB infrastructure on the
+  %% code path leaves every store as `{:vor_extern_error, ...}` and these still
+  %% report PASS / substantive (F-006).
+  %%
+  %% `for_all` is reported `substantive` by construction — Vor's relevance axis
+  %% treats a universal quantifier's subject as its (non-empty) domain, so a
+  %% `for_all` invariant can never be flagged vacuous (GAP-016). The green badge
+  %% on these three is not evidence that the check engaged with anything.
+  safety "lww_store never becomes the :error sentinel" proven do
     for_all agents, lww_store != :error
   end
 
-  safety "set_store is always a map" proven do
+  safety "set_store never becomes the :error sentinel" proven do
     for_all agents, set_store != :error
   end
 
-  safety "counter_store is always a map" proven do
+  safety "counter_store never becomes the :error sentinel" proven do
     for_all agents, counter_store != :error
   end
 
-  %% Safety: no two agents can have stores that diverge after the model
-  %% checker has delivered all pending sync messages. These use named
-  %% agent refs to compare cross-agent state. The model checker explores
-  %% all message interleavings including syncs, so if convergence fails
-  %% in any reachable state, these invariants catch it.
+  %% Downgraded proven -> checked on 2026-08-09 (F-002).
   %%
-  %% NOTE: These compare the full map state. With bounded key/value space
-  %% (--integer-bound 2), the model checker can enumerate all combinations.
-  safety "v1 and v2 lww_store don't diverge to error" proven do
+  %% The current toolchain refuses these at `proven`: VACUOUS PROOF — the
+  %% subject `v1.lww_store == :error` is never true in any explored state, so
+  %% the implication holds by an empty antecedent. It was equally vacuous under
+  %% the old toolchain; the old toolchain just did not say so.
+  %%
+  %% `checked` is the routing the refusal recommends. These are kept as a record
+  %% of the shape, not as evidence. The comment they used to carry — that they
+  %% detect cross-replica divergence — was false: they only ever compared
+  %% against the `:error` atom, never against each other's contents.
+  safety "v1 and v2 lww_store don't diverge to error" checked do
     never(v1.lww_store == :error and v2.lww_store != :error)
   end
 
-  safety "v2 and v3 lww_store don't diverge to error" proven do
+  safety "v2 and v3 lww_store don't diverge to error" checked do
     never(v2.lww_store == :error and v3.lww_store != :error)
   end
 
-  %% Deep map equality across agents. The model checker uses Erlang's ==
-  %% operator which does structural comparison — this works on maps, not
-  %% just atoms/integers. With bounded state (--integer-bound 2), the
-  %% lww_store maps are small enough to enumerate all combinations.
-  %%
-  %% NOTE: this invariant will FAIL in states where syncs haven't completed
-  %% (agents may have different stores mid-flight). It's valid only as a
-  %% post-convergence check. Leaving it here as documentation that the
-  %% comparison works, but marking as 'checked' not 'proven' since the
-  %% model checker explores pre-convergence states too.
+  %% NOT DECLARED: a real convergence invariant (`never(v1.lww_store !=
+  %% v2.lww_store)`). At the checker tier it is unexpressible in practice (both
+  %% sides abstract to `:unknown`, so it is trivially true and would be flagged
+  %% vacuous). At the simulation tier it would be red on every run, because the
+  %% simulator has no anti-entropy: gossip goes through an extern to peers that
+  %% do not exist in the harness. See F-007.
 end

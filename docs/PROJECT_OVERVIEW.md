@@ -1,6 +1,6 @@
 # VorDB — Project Overview
 
-**A CRDT-based distributed key-value store with verified coordination.**
+**A CRDT-based distributed key-value store on the BEAM.**
 
 This document describes VorDB as it exists today. It is the single reference for understanding the complete system — architecture, data flow, module responsibilities, deployment model, and current status. Written for new contributors (human or AI).
 
@@ -12,13 +12,13 @@ VorDB is a distributed database where:
 
 - Every node accepts writes — no leader, no election, no consensus protocol
 - Conflicts resolve automatically using CRDTs (Conflict-Free Replicated Data Types)
-- The coordination layer is verified at multiple levels via Vor: compile-time safety proofs, multi-agent model checking, chaos simulation, and property testing (see [Verification](#verification) below)
+- The coordination vnode is compiled from Vor, which gives it completeness checking, protocol input constraints, generated telemetry, and a chaos simulator. It does **not** give it compile-time safety proofs or useful model checking — see [Verification](#verification) below for what each layer actually produced when it was last re-derived (2026-08-09)
 - Data is partitioned across nodes via a consistent hashing ring
 - Each key is replicated to N nodes for fault tolerance
 - Writes fan out synchronously to all replicas at request time; convergence is typically ~2 ms across a 3-node loopback cluster (see [PERFORMANCE.md](./PERFORMANCE.md)). Gossip is the safety net that catches up replicas when a fan-out is dropped or a node was unreachable, not the primary replication path.
 - Availability is prioritized over immediate consistency: a write succeeds as soon as the local (or primary) replica acknowledges; remote replicas are reconciled by fan-out cast and, if needed, by gossip.
 
-VorDB is the spiritual successor to Riak. Riak proved that CRDT-based distributed storage on the BEAM works at production scale. VorDB adds what Riak never had: compile-time verification of the coordination layer.
+VorDB is the spiritual successor to Riak. Riak proved that CRDT-based distributed storage on the BEAM works at production scale. VorDB's addition is a coordination vnode written as a declared state machine — which buys generated telemetry, protocol constraints, and a chaos harness for free. The stronger claim this document used to make, compile-time verification of the coordination layer, does not hold: see [Verification](#verification).
 
 ---
 
@@ -26,7 +26,7 @@ VorDB is the spiritual successor to Riak. Riak proved that CRDT-based distribute
 
 | Layer | Language | Role |
 |---|---|---|
-| Coordination | Vor | State machine, CRDT merge, gossip timing. Compile-time verified. |
+| Coordination | Vor | State machine, CRDT merge, gossip timing. Completeness- and protocol-checked at compile time; auto-instrumented. |
 | Application | Gleam | All application logic. Statically typed, exhaustive pattern matching. |
 | FFI bridges | Erlang | Thin bridges between Gleam, Vor agent, RocksDB, and BEAM primitives. |
 | Persistence | RocksDB (C++) | Local storage via NIF bindings. |
@@ -57,7 +57,7 @@ Client
                         ▼
               Vor Agent (KvStore)
               ┌─────────────────────┐
-              │ LWW merge (:lww)    │ ← compile-time verified
+              │ LWW merge (:lww)    │ ← Vor builtin (not proven)
               │ ORSWOT merge        │ ← property-tested extern
               │ PN-Counter merge    │ ← property-tested extern
               │ Gossip timing       │ ← every block fires extern
@@ -128,7 +128,7 @@ This means `sync_interval_ms` controls **how fast missed fan-outs are reconciled
 
 Simple key-value. Each entry: `{value, timestamp, node_id}`. Concurrent writes resolved by highest timestamp; ties broken by node_id. Deletes are tombstones.
 
-**Merge:** Vor-native `map_merge(:lww)` — compile-time verified.
+**Merge:** Vor-native `map_merge(:lww)` — a compiler builtin, so the merge is implemented once in Vor rather than by hand in VorDB. Nothing proves a property about it during VorDB's build; see [Verification](#verification).
 
 ### ORSWOT (Optimized OR-Set Without Tombstones)
 
@@ -595,34 +595,98 @@ Build order: proto → Vor compilation → Gleam build (compiles .gleam + .erl f
 
 ## Verification
 
-VorDB's coordination layer has five verification levels. No other distributed database has this combination.
+> **Audited 2026-08-09 against current Vor main.** This section previously
+> claimed five verification levels including "512 states proven" and
+> compile-time proof of LWW merge. Both were withdrawn: the model checker
+> explores one state, and VorDB declares no compile-time safety invariant. The
+> full re-derivation, including two mutation tests, is in
+> [VERIFICATION_AUDIT_2026-08.md](./VERIFICATION_AUDIT_2026-08.md).
+> Every figure below is produced by `make verify`.
 
-### 1. Compile-Time Safety Proofs
+### 1. Compile-Time Safety Proofs — **none**
 
-LWW merge uses Vor's native `map_merge(:lww)` — the merge function is proven correct at compile time. This is the strongest guarantee: the merge can never produce incorrect results because the compiler verifies it before the code runs.
+`KvStore` declares zero `safety` invariants, so `mix compile` has no proof
+obligation to discharge. It type-checks the agent, checks handler completeness
+and protocol constraints, and generates code and telemetry — all real, none of
+it a safety proof.
 
-### 2. Multi-Agent Model Checking
+`map_merge(:lww)` is a compiler builtin, not a verified merge: using it means
+the merge is implemented once in Vor rather than in VorDB, which is a
+correctness benefit, but nothing proves a property about it during VorDB's
+build. The older claim that "the merge can never produce incorrect results
+because the compiler verifies it" was unsupported.
 
-`mix vor.check` exhaustively explores all message interleavings across a 3-vnode cluster (`src/vor/kv_cluster.vor`). Five safety invariants are proven in 512 states (depth 9, < 1 second wall clock):
+Reaching a real compile-time proof would require enum-typed state on the agent
+(a gen_server with only map fields has no state graph to verify) — see F-008.
 
-- CRDT stores never crash to error sentinels (per-agent: `lww_store != :error`, `set_store != :error`, `counter_store != :error`)
-- No asymmetric error divergence across agents (cross-agent: if v1's store errors, v2's must too)
+### 2. Multi-Agent Model Checking — **1 state, verifies nothing**
 
-The model checker uses Erlang's structural `==` for comparisons — it can compare full map state across agents, not just atoms or integers. The state space is bounded by `--integer-bound` to keep exploration tractable.
+`mix vor.check --deep` on `src/vor/kv_cluster.vor` (queue 4, integer-bound 3,
+depth 50) explores **1 state at depth 0**. The system takes no transitions.
 
-### 3. Chaos Simulation
+Three reasons compound:
 
-`mix vor.simulate` starts real BEAM processes from the system block, injects failures, sends client workload, and checks invariants against live state. Results across three scenarios:
+1. **No inter-agent messages exist.** `KvStore` contains no `send` and no
+   `broadcast`. Every sync message VorDB exchanges is built inside
+   `vordb_ffi:gossip_send_vnode_deltas/2` — an extern — and delivered by `erpc`.
+   The explorer does not model externs, so the six `connect` edges in the system
+   block carry nothing. Firing timers (which current Vor does) changes nothing:
+   the timer fires, calls the extern, and no message is queued.
+2. **All state is maps.** The explorer abstracts map operations to `:unknown`
+   (Vor KNOWN_ISSUES §5), so every handler's successor is identical to its
+   parent and BFS terminates at the root.
+3. **The invariants are sentinels.** Three test `field != :error`; two are
+   reported vacuous and have been downgraded from `proven` to `checked`.
 
-| scenario | duration | seed | checks | faults | violations | workload (ok/err) |
-|---|---|---|---|---|---|---|
-| kill injection | 30s | 42 | 29 | 4 | **0** | 147/2 |
-| partition + delay | 30s | 123 | 29 | 3 | **0** | 145/0 |
-| combined chaos | 60s | 777 | 59 | 7 | **0** | 563/7 |
+| invariant | tier | relevance |
+|---|---|---|
+| `lww_store never becomes the :error sentinel` | `proven` | `substantive` — but see below |
+| `set_store never becomes the :error sentinel` | `proven` | `substantive` — but see below |
+| `counter_store never becomes the :error sentinel` | `proven` | `substantive` — but see below |
+| `v1 and v2 lww_store don't diverge to error` | `checked` | **VACUOUS** (0/1 states) |
+| `v2 and v3 lww_store don't diverge to error` | `checked` | **VACUOUS** (0/1 states) |
 
-All scenarios reproducible via `--seed`. The simulator validates that agent-level invariants hold under process kills, network partitions, and message delays.
+The three `substantive` badges do not mean what they look like. Vor's relevance
+axis treats a `for_all` invariant's subject as its quantification domain, which
+is non-empty whenever agents exist — so a `for_all` invariant is reported
+substantive by construction and can never be flagged vacuous, here over a state
+space of size one (GAP-016).
 
-**Known limitation:** the chaos simulator doesn't start VorDB's infrastructure stack (RocksDB, ETS cache, dirty tracker). Agents crash on `on :init` when storage is unavailable. The OTP supervisor restarts them correctly, workload flows via the Vor-generated message proxies, and invariant checks pass. Full-stack chaos testing (with RocksDB and the coordinator) is covered by VorDB's integration test suite, not the Vor simulator.
+**Mutation result:** breaking replica convergence — making `on {:lww_sync}` drop
+the remote store entirely — produces output character-for-character identical to
+the unmutated run. The checker cannot see it. A control mutation that writes
+`:error` into a store *is* caught at depth 1, so the harness works; the model
+does not.
+
+### 3. Chaos Simulation — **the layer that works**
+
+`make verify-chaos` puts VorDB's beams on the code path, starts RocksDB, the ETS
+cache, and the dirty tracker, then runs `Vor.Simulator` against the system block
+with a 10/s client workload. Real processes, real kills, real partitions.
+
+| scenario | dur | seed | checks | faults | violations | integrity | handlers reached | emits reached |
+|---|---|---|---|---|---|---|---|---|
+| kill injection | 30s | 42 | 29 | 4 | **0** | not degraded | 50/51 | 35/39 |
+| partition + delay | 30s | 123 | 29 | 3 | **0** | not degraded | 51/51 | 36/39 |
+| combined chaos | 60s | 777 | 59 | 7 | **0** | not degraded | 51/51 | 35/39 |
+
+Seeds fix the fault schedule and workload; BEAM scheduling is not seeded, so
+check and fault counts replay exactly and workload totals drift by a few
+operations.
+
+**Read the coverage column, not just the violations column.** Run the way the
+docs used to recommend — plain `mix vor.simulate --seed 42`, no workload and no
+VorDB infrastructure — and the identical headline appears (29 checks, 4 faults,
+0 violations, integrity clean) over a run that reached **0 of 51 handlers**.
+Every store held `{:vor_extern_error, …}` for the whole run and all five
+invariants still passed, because an error tuple is not the atom `:error`
+(F-006). The integrity axis measures whether the *harness* degraded, not whether
+the agents did anything; coverage is the axis that catches this.
+
+**What chaos does not cover:** convergence. Gossip leaves the agent through an
+extern aimed at cluster peers the harness does not start, so replicas never
+reconcile and divergent replica state is observable in passing runs (F-007).
+Convergence is tested by `vordb_cluster_tests` and `vordb_integration_tests`.
 
 ### 4. Property Testing
 
@@ -646,15 +710,29 @@ Every KvStore agent emits telemetry events automatically — no manual instrumen
 
 Sensitive fields (`lww_store`) are redacted in transition events — user data never appears in telemetry. These Vor-generated events complement VorDB's hand-written infrastructure telemetry (coordinator latency, cache hit/miss, gossip deltas) and are exposed on the same `/metrics` Prometheus endpoint.
 
+Current Vor emits eight events; VorDB attaches the three above. `[:vor, :agent, :start]`, `[:vor, :message, :emitted]`, `[:vor, :backpressure, :rejected]`, and the two `[:vor, :monitored, …]` events are unattached (F-005).
+
 ### What each level catches
 
 | bug type | caught by |
 |---|---|
-| Incorrect LWW merge logic | compile-time proof |
-| Agent deadlock or crash under message interleavings | model checking |
-| Recovery failure after process kill or network partition | chaos simulation |
-| CRDT merge violating mathematical properties | property testing |
+| CRDT merge violating commutativity/associativity/idempotency | property testing |
+| Recovery failure after process kill, partition, or message delay | chaos simulation |
+| Invalid client input reaching a handler | protocol `where` constraints (compile time) |
+| Missing handler for a declared message | completeness checking (compile time) |
 | Silent state corruption without operator visibility | auto-telemetry |
+| Broken quorum / W-R logic | `vordb_quorum_tests` (`make test`) |
+| Replicas failing to converge | `vordb_cluster_tests`, `vordb_integration_tests` (`make test`) |
+
+### What no level catches
+
+Established by mutation testing, not by inspection — see F-010 and F-011.
+
+| bug type | why nothing catches it |
+|---|---|
+| A replica-merge handler that silently drops the remote store | invisible to the checker (maps abstract to `:unknown`, model has 1 state); no invariant at any tier compares replicas |
+| Any bug in the ring, coordinator, quorum, handoff, or gossip modules | all pure Erlang/Gleam outside the Vor agent — no Vor tier has visibility. Defended only by `make test`. |
+| A store holding an error value rather than data | the declared invariants test `!= :error` (the atom), which an error *tuple* satisfies |
 
 ---
 
@@ -668,8 +746,18 @@ Sensitive fields (`lww_store`) are redacted in transition events — user data n
 | GAP-010 | Open (Low) | Emit field name collision — cosmetic |
 | GAP-013 | Open (Medium) | OR-Set merge not Vor-native — property-tested workaround |
 | GAP-014 | Open (Medium) | PN-Counter merge not Vor-native — property-tested workaround |
+| GAP-015 | Open (Medium) | Extern-mediated messaging leaves a declared `connect` topology silently unexercised — the direct cause of the 1-state model |
+| GAP-016 | Open (Low) | `for_all` invariants are reported `substantive` by construction and can never be flagged vacuous |
 
-GAP-013 and GAP-014 are blocked on Vor gaining map iteration capabilities. LWW merge is compile-time verified. OR-Set and PN-Counter merge are property-tested. All three CRDT types are additionally covered by multi-agent model checking and chaos simulation (see [Verification](#verification)).
+GAP-013 and GAP-014 are blocked on Vor gaining map iteration capabilities. All
+three merge functions are property-tested; none is compile-time verified. Model
+checking adds nothing for any of the three (the explorer abstracts map
+operations to `:unknown`); chaos simulation exercises all three against real
+storage. See [Verification](#verification).
+
+GAP-015 and GAP-016 were found during the 2026-08 audit and are to be reported
+upstream — neither is a Vor bug in the sense of wrong output; both are cases
+where a true report reads as stronger evidence than it is.
 
 ### Scaling Concerns (SCALING_DEBT.md)
 
@@ -697,7 +785,8 @@ No architectural blockers. All remaining items are operational tuning or Vor lan
 | Phase 3 | "It's production-ready" | ORSWOT, ETS reads, column families, ETS DirtyTracker, protobuf TCP, telemetry |
 | Core features | "It's a real product" | Buckets, TTL, tunable W/R quorum, read repair, consistency presets |
 | Benchmarking | Performance characterization | Baseline numbers, eprof profiling, persistent_term optimization |
-| Verification integration | Five-layer verification | Model checking, chaos simulation, auto-telemetry, protocol constraints, sensitive annotations |
+| Verification integration | Wired up five Vor tiers | Model checking, chaos simulation, auto-telemetry, protocol constraints, sensitive annotations |
+| Verification audit (2026-08) | Re-derived every figure against current Vor | Two of the five tiers found to produce nothing; docs corrected; `make verify` added |
 
 The Vor agent at the core has been stable since Phase 0. Recent changes added protocol constraints, sensitive annotations, and TTL support, but the core CRDT merge logic and handler structure are unchanged. Every feature added infrastructure around it.
 
@@ -707,7 +796,7 @@ The Vor agent at the core has been stable since Phase 0. Recent changes added pr
 
 - **Riak** — CRDT-based distributed storage on BEAM. Proved the model works at scale. Business failure, not technology failure. VorDB fills the empty chair.
 - **Amazon Dynamo** — consistent hashing, preference lists, sloppy quorum, vector clocks. VorDB's ring and replication model.
-- **Vor** — BEAM-native language with compile-time verification. VorDB's coordination layer.
+- **Vor** — BEAM-native language with declared state machines, compile-time completeness/protocol checking, and generated telemetry. VorDB's coordination layer.
 - **RocksDB** — LSM-tree storage engine. Write-optimized, battle-tested at petabyte scale (TiKV, CockroachDB).
 - **BEAM/OTP** — process isolation, fault tolerance, Erlang distribution. The runtime that makes all of this possible.
 

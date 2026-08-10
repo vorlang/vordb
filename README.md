@@ -1,16 +1,17 @@
 # VorDB
 
-**A CRDT-based distributed key-value store with verified coordination.**
+**A CRDT-based distributed key-value store on the BEAM.**
 
-Every node accepts writes. Conflicts resolve automatically via CRDTs. The coordination layer is verified at five levels using [Vor](https://github.com/vorlang/vor): compile-time safety proofs, multi-agent model checking, chaos simulation, property testing, and auto-generated telemetry. Built on Gleam, Erlang, RocksDB, and the BEAM.
+Every node accepts writes. Conflicts resolve automatically via CRDTs. Built on Gleam, Erlang, RocksDB, and the BEAM, with the coordination vnode compiled from [Vor](https://github.com/vorlang/vor).
 
-VorDB is the spiritual successor to Riak — with the multi-layer verification Riak never had.
+**On verification claims:** earlier versions of this README advertised "five-layer verification", "512 states proven", and "0 violations under chaos". A re-derivation against current Vor (2026-08-09) found those figures unsupportable — the model checker explores **one state**, and the declared invariants do not catch a deliberately broken replica-merge. What holds up is chaos simulation, CRDT property testing, and auto-generated telemetry. The full audit, including the mutation tests that failed to go red, is in
+[docs/VERIFICATION_AUDIT_2026-08.md](./docs/VERIFICATION_AUDIT_2026-08.md). Numbers below are reproducible with `make verify`.
 
 For the full architecture reference, see [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md).
 
 ## Features
 
-- **Three CRDT types** — LWW-Register (Vor-native verified merge), ORSWOT set, PN-Counter
+- **Three CRDT types** — LWW-Register (Vor-native `map_merge(:lww)`), ORSWOT set, PN-Counter
 - **Buckets** — named collections with per-bucket CRDT type, TTL, replication factor, and consistency level
 - **TTL** — automatic key expiration per bucket, reset on mutation (active data doesn't expire)
 - **Tunable consistency** — per-bucket W/R quorum with presets: `eventual`, `session`, `consistent`, `paranoid`
@@ -24,7 +25,9 @@ For the full architecture reference, see [docs/PROJECT_OVERVIEW.md](./docs/PROJE
 - **Lock-free ETS dirty tracker** — no GenServer bottleneck on the gossip path
 - **Protobuf TCP protocol** — length-prefixed binary protocol alongside HTTP REST
 - **Telemetry + Prometheus** — `/metrics` endpoint with low-cardinality tags; Vor auto-generates agent telemetry (transitions, messages, constraint violations)
-- **Five-layer verification** — compile-time proofs, model checking (512 states proven), chaos simulation (kills + partitions + delays), property testing (15 suites), auto-instrumentation
+- **Chaos simulation** — real BEAM processes under kills, partitions, and message delays, with declared-vs-observed coverage reported per run
+- **CRDT property testing** — commutativity, associativity, idempotency across all three merge functions
+- **Auto-generated telemetry** — transitions, messages, and constraint violations instrumented by the Vor compiler, not by hand
 
 ## Quick Start
 
@@ -161,9 +164,26 @@ W=1 and R=1 use optimized fast paths with zero quorum overhead.
 | Phase 2 | Consistent hashing ring, replicated writes, handoff, ring gossip |
 | Phase 3 | ORSWOT, ETS reads, column families, ETS DirtyTracker, protobuf/TCP, telemetry |
 | Core features | Buckets, TTL, tunable W/R quorum, read repair |
-| Verification | Model checking, chaos simulation, auto-telemetry, protocol constraints |
+| Verification | Chaos simulation, auto-telemetry, protocol constraints — audited 2026-08 |
 
-75 tests, 0 failures. Five verification layers: compile-time proofs (LWW merge), model checking (512 states proven across 5 invariants), chaos simulation (0 violations under kills + partitions + delays), property testing (15 suites × 3 CRDT types), and auto-generated telemetry on every agent state transition.
+**75 tests, 0 failures.** That suite is the load-bearing safety net: it is what
+catches a broken quorum, and it is what tests replica convergence.
+
+What the Vor tiers add, measured with `make verify` on 2026-08-09:
+
+| layer | what it produced | worth |
+|---|---|---|
+| Chaos simulation | 3 scenarios (seeds 42/123/777), 29–59 invariant checks, 3–7 injected faults, 0 violations, 50–51 of 51 declared handlers reached, integrity clean | **Real.** Exercises live code under kills, partitions, and delays. |
+| Auto-generated telemetry | every transition, message, and constraint violation instrumented by the compiler; `lww_store` redacted as `sensitive` | **Real.** |
+| Protocol constraints | `where amount > 0` on counter operations, enforced before handlers run | **Real.** |
+| CRDT property testing | 15 suites × 3 CRDT types (this is plain gleeunit, not Vor) | **Real.** |
+| Multi-agent model checking | 1 state, depth 0 — the agent's state is three maps, which the explorer abstracts to `:unknown`, and gossip leaves through an extern so no inter-agent message is ever modelled | **Nothing.** Two of five invariants are reported vacuous; a planted replica-merge bug does not turn it red. |
+| Compile-time safety proofs | none — VorDB declares zero agent-level safety invariants | **Nothing.** The old "LWW merge is proven at compile time" claim was unsupported. |
+
+See [docs/VERIFICATION_AUDIT_2026-08.md](./docs/VERIFICATION_AUDIT_2026-08.md)
+for the findings, the mutation tests, and what would have to change for model
+checking to be worth running. See [verify/README.md](./verify/README.md) for how
+each figure is produced.
 
 See [docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md) for architecture, request flow, module reference, supervision tree, configuration, and outstanding issues.
 
